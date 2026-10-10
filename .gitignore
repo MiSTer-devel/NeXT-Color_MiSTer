@@ -1,0 +1,83 @@
+# verilator build outputs
+*.o
+*.elf
+
+verilator/cpu_trace.log
+imgui.ini
+db
+greybox_tmp
+incremental_db
+output_files
+simulation
+hc_output
+scaler
+hps_isw_handoff
+vip
+*_sim
+.qsys_edit
+PLLJ_PLLSPE_INFO.txt
+*.bak
+*.orig
+*.rej
+*.qdf
+*.rpt
+*.smsg
+*.summary
+*.done
+*.jdi
+*.pin
+*.sof
+*.qws
+*.ppf
+*.ddb
+build_id.v
+c5_pin_model_dump.txt
+*.sopcinfo
+*.csv
+*.f
+*.cmp
+*.sip
+*.spd
+*.bsf
+*~
+*.xml
+*_netlist
+*.cdf
+.DS_Store
+imgui.ini
+cpu_trace.log
+ram_debug.log
+verilator/obj_dir
+verilator/obj_dir_tb*
+verilator/*.png
+
+# analysis scratchpad (Track A/C diffs, sim summaries, screenshots)
+scratch/
+verilator/*.out
+verilator/*.err
+verilator/build*.log
+verilator/imgui.ini
+# local/personal env (host IP, ssh key path) — never commit
+scripts/local.env
+# debug captures / build artifacts kept locally
+*.zip
+*.stp
+quartus_build*.log
+verilator/sim_stdout.log
+
+# python tooling artifacts
+__pycache__/
+*.pyc
+
+# Claude Code local permissions (machine-specific: deploy target lives in scripts/local.env)
+.claude/settings.local.json
+verilator/obj_dir_*/
+
+# NeXT-Color simulator artefacts
+verilator/*.rom.hex
+verilator/*.nvram.hex
+verilator/sim_run*.log
+verilator/*.fst
+verilator/*.vcd
+verilator/screenshot_*.png
+verilator/rom_syms.txt

@@ -1,0 +1,146 @@
+# --------------------------------------------------------------------------
+#
+# MiSTer project
+#
+# WARNING WARNING WARNING:
+# Do not add files to project in Quartus IDE! It will mess this file!
+# Add the files manually to files.qip file.
+#
+# --------------------------------------------------------------------------
+
+set_global_assignment -name TOP_LEVEL_ENTITY sys_top
+set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
+set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
+set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
+
+set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"
+
+set_global_assignment -name GENERATE_RBF_FILE ON
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+set_global_assignment -name SAVE_DISK_SPACE OFF
+set_global_assignment -name SMART_RECOMPILE ON
+set_global_assignment -name MIN_CORE_JUNCTION_TEMP "-40"
+set_global_assignment -name MAX_CORE_JUNCTION_TEMP 100
+set_global_assignment -name POWER_PRESET_COOLING_SOLUTION "23 MM HEAT SINK WITH 200 LFPM AIRFLOW"
+set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
+set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS OFF
+set_global_assignment -name OPTIMIZE_POWER_DURING_FITTING OFF
+set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION ALWAYS
+set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
+set_global_assignment -name OPTIMIZATION_MODE BALANCED
+set_global_assignment -name ALLOW_POWER_UP_DONT_CARE ON
+set_global_assignment -name QII_AUTO_PACKED_REGISTERS NORMAL
+set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
+set_global_assignment -name OPTIMIZATION_TECHNIQUE BALANCED
+set_global_assignment -name MUX_RESTRUCTURE ON
+set_global_assignment -name REMOVE_REDUNDANT_LOGIC_CELLS ON
+set_global_assignment -name AUTO_DELAY_CHAINS_FOR_HIGH_FANOUT_INPUT_PINS ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC_FOR_AREA ON
+set_global_assignment -name ADV_NETLIST_OPT_SYNTH_WYSIWYG_REMAP ON
+set_global_assignment -name SYNTH_GATED_CLOCK_CONVERSION ON
+set_global_assignment -name PRE_MAPPING_RESYNTHESIS ON
+set_global_assignment -name ROUTER_CLOCKING_TOPOLOGY_ANALYSIS ON
+set_global_assignment -name ECO_OPTIMIZE_TIMING ON
+set_global_assignment -name PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
+set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
+set_global_assignment -name SEED 7
+
+# Fitter recipe and build switches from MacQuadra800_MiSTer (its release recipe,
+# minus MISTER_DISABLE_SHADOWMASK and the other switches that need its patched sys/,
+# and minus MISTER_DOWNSCALE_NN: 832 lines onto 720p is a downscale, and text
+# needs the filtered one).
+# The AP040_EXPERIMENTAL_* macros match the validated Quadra CPU build.
+# Seed history (full compiles):
+#   seed 1  (1be854e, 2026-09-26): 34,974 ALMs (83%), 263 M10K; clk_sys -0.068 ns
+#           (TNS -0.106, all inside ap040_core epf_data), HDMI -0.069 ns (sys/),
+#           clk_vid +0.318, clk_ram +0.427, hold +0.239.  19.5 min.
+#   seed 1  (166b2de, the MCCS1850 reset fix on top): TIMING MET, worst +0.191 ns
+#           (HDMI); clk_sys +0.714, clk_vid +0.265, clk_ram +0.875.  35,133 ALMs
+#           (84%).  18.2 min.  (Meant to be seed 21; the edit missed, so this is
+#           the same seed on a slightly different netlist.)
+#   seed 1  (a56f083, M4 + T7213 + palette/timing rewrites): 37,454 ALMs (89%), placed
+#           39,171 (93%, 2,804 recoverable by dense packing), LABs 4,130/4,191 (99%)
+#           with routability ALWAYS: HDMI -0.138, clk_ram -0.020, clk_vid +0.506.
+#           LABs stayed at 99% in three fits while ALMs went 91% -> 89%.
+#   seed 1  (a56f083, routability AUTOMATICALLY as an experiment): 37,660 ALMs
+#           (90%), LABs 4,144 (99%) -- no better -- and clk_sys -0.720 (HDMI
+#           +0.085, clk_ram +0.202, clk_vid +0.523).  The LAB count does not
+#           follow either setting; ALWAYS is what keeps clk_sys closed.
+#   seed walk (a73ffaf RTL = a56f083, routability ALWAYS), 2026-09-26 16:48-17:19:
+#     seed 2: 37,478 ALMs; clk_sys -0.213 (HDMI +0.058, clk_ram +0.625, clk_vid +1.540)
+#     seed 3: 37,484 ALMs (89%), LABs 4,147 (99%), 271 M10K: TIMING MET, worst
+#             +0.106 (clk_ram); HDMI +0.224, clk_sys +0.792, clk_vid +1.217, hold
+#             +0.251.  rbf md5 34396054.  Kept.
+#   6d2e1a5 (the page-end prefetch fault fix, open question 39), 2026-09-26:
+#     seed 3: clk_sys -0.183 ns: TIMING NOT MET.
+#     seed 1: 37,483 ALMs: TIMING MET, worst +0.208 (clk_sys); HDMI +0.240,
+#             clk_ram +0.286, clk_vid +1.118, hold +0.246.  rbf md5 6382ea7a.
+#             On hardware: cc and NWBench's Compile run.  Kept.
+#   b9adc78 (+ the 2.88 MB floppy, next_floppy), 2026-09-26:
+#     seed 1: 38,465 ALMs (92%): -0.247 ns: TIMING NOT MET.
+#     seed 2: 38,149 ALMs (91%): TIMING MET, worst +0.062 ns.  rbf md5
+#             3aa9a91c.  On hardware: NeXTSTEP boots, formats, mounts and
+#             writes a 2.88 MB floppy.  Kept.
+#   2cd616c (+ Ethernet: next_enet_bridge, next_ddram_arb), 2026-09-27:
+#     seed 2: 38,548 ALMs (92%): TIMING MET, worst +0.231 ns.  rbf md5
+#             b54060fa.  On hardware: NeXTSTEP en0 at 192.168.99.38 pings
+#             the router and answers pings and TCP from the LAN.  Kept.
+#   56d823a (boot1-3.rom ignored; OSD defaults 32 MB / SCSI disk / V-Integer),
+#   2026-10-09 (the same RTL without the V-Integer default met at seed 8,
+#   +0.012 ns, and booted on hardware):
+#     seed 8: clk_sys -0.528 ns.  seed 1: clk_ram -0.437 ns.
+#     seed 2: 38,935 ALMs (93%): TIMING MET, worst +0.143 ns (clk_sys), hold
+#             +0.215 (HDMI).  rbf md5 ad239feb.  Release 20261009.
+#   d0773c5 + ddr_hold (the black screen at core start), 2026-10-09/10:
+#     seed 2: hold -0.329 (clk_ram).  seed 3: hold -0.362 (clk_ram).
+#     seed 4: setup -0.533 (clk_ram).  seed 5: HDMI setup -0.197 only.
+#     seed 6: setup -1.253, hold -1.212.
+#     seed 7: 38,755 ALMs (92%): TIMING MET, worst +0.095 ns (HDMI), hold
+#             +0.222.  rbf md5 264728c0.  Release 20261010.
+set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ALWAYS
+set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ADAPTIVE=1"
+set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ALSA=1"
+# No Y/C (composite / S-Video) encoder: the NeXT picture is 1120x832 at
+# 68.4 Hz with a 61.3 kHz line rate (100 MHz / 1632), which no composite or
+# S-Video input can show; the encoder's logic and multipliers go (2026-09-27).
+set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_YC=1"
+# No OSD on the analog output (HDMI keeps it): sys/sys_top.v carries
+# MacQuadra800_MiSTer's MISTER_DISABLE_VGA_OSD switch; ~514 ALMs (2026-09-27).
+set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_VGA_OSD=1"
+# the DSP56001 (tc_dsp + Main next_dsp) is parked: its registers read 0
+set_global_assignment -name VERILOG_MACRO "NEXT_NO_DSP=1"
+set_global_assignment -name VERILOG_MACRO "AP040_EXPERIMENTAL_XSTORE=1"
+set_global_assignment -name VERILOG_MACRO "AP040_EXPERIMENTAL_LEA=1"
+
+#set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
+
+#enable it only if 8bit indexed mode is used in core
+#set_global_assignment -name VERILOG_MACRO "MISTER_FB_PALETTE=1"
+
+#do not enable DEBUG_NOHDMI in release!
+#set_global_assignment -name VERILOG_MACRO "MISTER_DEBUG_NOHDMI=1"
+
+# disable bilinear filtering when downscaling
+#set_global_assignment -name VERILOG_MACRO "MISTER_DOWNSCALE_NN=1"
+
+# disable adaptive scanline filtering
+#set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ADAPTIVE=1"
+
+#use only 1MB per frame for scaler to free ~21MB DDR3 RAM
+#set_global_assignment -name VERILOG_MACRO "MISTER_SMALL_VBUF=1"
+
+# Disable YC / Composite output to save some resources
+#set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_YC=1"
+
+# Disable ALSA audio output to save some resources
+#set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ALSA=1"
+
+source sys/sys.tcl
+source sys/sys_analog.tcl
+source files.qip
+set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
