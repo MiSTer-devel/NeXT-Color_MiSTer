@@ -6,7 +6,8 @@
 //  uses $20000000..$217FFFFF).  Three clock domains:
 //
 //  clk_sys (33 MHz)  the machine's beat port (memsel VRAM): one longword at
-//                    a time, level req, 1-cycle ack.
+//                    a time, level req, 1-cycle ack; writes are posted
+//                    (acked at capture, one in flight).
 //  clk_ram (99 MHz)  DDRAM_CLK.  Exactly 3x clk_sys from the same PLL, phase
 //                    aligned (rtl/pll), so the CPU request/done crossing is a
 //                    plain timed multi-rate path (toggles, no synchronisers).
@@ -98,31 +99,43 @@ reg [20:2] c_addr;
 reg  [3:0] c_be;
 reg [31:0] c_wdata;
 reg        c_busy;
+reg        c_posted;           // the request in flight is a write, already acked
 reg        r_done_t = 0;       // clk_ram: toggles when a request completes
 reg [31:0] r_rdata;
 reg        c_done_seen = 0;
 
+// A write is acked when it is captured (posted): a DDR3 VRAM write cannot
+// fault, and nothing else reaches VRAM except through this port, so the
+// machine may carry on.  c_busy stays up until the engine's done toggle, so
+// the next request (read or write) still waits for it; its completion gives
+// no second ack (mem_ack is an OR of the memory units, tc_memsys).
 always @(posedge clk_sys) begin
 	ack <= 0;
 	if (reset) begin
-		c_busy <= 0;
+		c_busy   <= 0;
+		c_posted <= 0;
 		c_done_seen <= r_done_t;
 	end
 	else begin
 		if (!c_busy) c_done_seen <= r_done_t;
 		if (req && !c_busy && !ack) begin
-			c_we    <= we;
-			c_addr  <= addr;
-			c_be    <= be;
-			c_wdata <= wdata;
-			c_req_t <= ~c_req_t;
-			c_busy  <= 1;
+			c_we     <= we;
+			c_addr   <= addr;
+			c_be     <= be;
+			c_wdata  <= wdata;
+			c_req_t  <= ~c_req_t;
+			c_busy   <= 1;
+			c_posted <= we;
+			if (we) ack <= 1;
 		end
 		if (c_busy && (r_done_t != c_done_seen)) begin
 			c_done_seen <= r_done_t;
-			c_busy <= 0;
-			ack    <= 1;
-			rdata  <= r_rdata;
+			c_busy   <= 0;
+			c_posted <= 0;
+			if (!c_posted) begin
+				ack   <= 1;
+				rdata <= r_rdata;
+			end
 		end
 	end
 end
