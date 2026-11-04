@@ -159,6 +159,13 @@ task automatic check_ddr;
 	end
 endtask
 
+// queue coverage (tc_vram's posted-write queue): deepest fill, cycles full
+integer wq_max = 0, wq_full_cyc = 0;
+always @(posedge clk_sys) begin
+	if (4'(dut.wq_wp - dut.wq_rp_sys) > wq_max) wq_max = 4'(dut.wq_wp - dut.wq_rp_sys);
+	if (dut.wq_full && req && we) wq_full_cyc = wq_full_cyc + 1;
+end
+
 integer c_idle, c_vid;
 localparam integer N = 4000;
 
@@ -188,6 +195,7 @@ initial begin
 		errors = errors + 1;
 	end
 
+	$display("write queue: deepest %0d of 8, %0d clk_sys with a write waiting on a full queue", wq_max, wq_full_cyc);
 	if (errors == 0) $display("PASS tb_tc_vram");
 	else             $display("FAIL tb_tc_vram: %0d errors", errors);
 	$finish;
