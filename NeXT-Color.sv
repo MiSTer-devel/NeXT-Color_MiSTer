@@ -395,6 +395,8 @@ wire [26:2] mem_wp_addr;
 wire  [3:0] mem_wp_be;
 wire [31:0] mem_wp_data;
 wire        mem_wq_room;
+wire        mem_wp_vram;
+wire        mem_vwq_room;
 wire        mem_line_valid;
 wire [26:4] mem_line_tag;
 wire [127:0] mem_line_data;
@@ -431,6 +433,8 @@ tc_machine #(.CLK_HZ(CLK_SYS_HZ)) machine
 	.mem_wp_be(mem_wp_be),
 	.mem_wp_data(mem_wp_data),
 	.mem_wq_room(mem_wq_room),
+	.mem_wp_vram(mem_wp_vram),
+	.mem_vwq_room(mem_vwq_room),
 	.mem_line_valid(mem_line_valid),
 	.mem_line_tag(mem_line_tag),
 	.mem_line_data(mem_line_data),
@@ -573,6 +577,8 @@ tc_memsys #(.RAM_HZ(3 * CLK_SYS_HZ)) memsys
 	.mem_wp_be(mem_wp_be),
 	.mem_wp_data(mem_wp_data),
 	.mem_wq_room(mem_wq_room),
+	.mem_wp_vram(mem_wp_vram),
+	.mem_vwq_room(mem_vwq_room),
 	.mem_line_valid(mem_line_valid),
 	.mem_line_tag(mem_line_tag),
 	.mem_line_data(mem_line_data),

@@ -69,6 +69,8 @@ module tc_machine
 	output reg  [3:0] mem_wp_be,
 	output reg [31:0] mem_wp_data,
 	input             mem_wq_room,
+	output reg        mem_wp_vram,   // the push goes to tc_vram's write queue
+	input             mem_vwq_room,
 	// the SDRAM bridge's retained line (SDRAM address space)
 	input             mem_line_valid,
 	input      [26:4] mem_line_tag,
@@ -866,7 +868,11 @@ wire [31:0] bus_line_data = (bus_addr[3:2] == 2'd0) ? mem_line_data[127:96] :
                             (bus_addr[3:2] == 2'd2) ? mem_line_data[63:32]  :
                                                       mem_line_data[31:0];
 
-// direct RAM writes into the bridge FIFO (quadra800.sv, P214 split stores)
+// direct RAM writes into the bridge FIFO (quadra800.sv, P214 split stores),
+// and direct VRAM writes into tc_vram's write queue on the same push
+// registers (mem_wp_vram picks the queue).  A VRAM store that spans two
+// longwords goes through the adapter: it reaches the same queue through
+// the beat port, behind the direct pushes before it.
 wire  [2:0] bus_wr_bytes = (bus_size == 2'd0) ? 3'd1 : (bus_size == 2'd1) ? 3'd2 : 3'd4;
 wire  [2:0] bus_wr_end   = {1'b0, bus_addr[1:0]} + bus_wr_bytes;
 wire [31:0] bus_wr_left  = (bus_size == 2'd0) ? {bus_wdata[7:0], 24'd0} :
@@ -883,11 +889,13 @@ wire        bus_wr_span  = (bus_wr_end > 3'd4);
 // decode and translation).  The rare store on the block's last longword
 // goes through the adapter like any other access.
 wire        bus_wr_nx_ok = ~&bus_addr[22:2];
+wire        bus_wr_ram  = (decode(bus_addr[31:2]) == 3'd0);
+wire        bus_wr_vram = (decode(bus_addr[31:2]) == 3'd2);
 wire bus_wr_direct = (DIRECT_WRITES != 0) && (svc == S_IDLE) && !walker_pend && !cpu_berr && !wb_pend &&
                      !bus_miss_ack && !bus_line_ack && !bus_adapter_active && !wr_split_pend &&
                      !bus_ack_adapter && bus_req && bus_write &&
-                     (!bus_wr_span || bus_wr_nx_ok) &&
-                     (decode(bus_addr[31:2]) == 3'd0) && mem_wq_room;
+                     ((bus_wr_ram && (!bus_wr_span || bus_wr_nx_ok) && mem_wq_room) ||
+                      (bus_wr_vram && !bus_wr_span && mem_vwq_room));
 
 assign bus_req_adapter = bus_req && !bus_line_match && !bus_line_wait && !bus_wr_direct && !wr_split_pend &&
                          !bus_first_miss && !svc_bus_direct && !bus_miss_ack && !bus_line_ack;
@@ -957,6 +965,7 @@ always @(posedge clk) begin
 		mem_wp_addr    <= 0;
 		mem_wp_be      <= 0;
 		mem_wp_data    <= 0;
+		mem_wp_vram    <= 0;
 		cpu_berr       <= 0;
 		mem_req        <= 0;
 		mem_write      <= 0;
@@ -1013,6 +1022,7 @@ always @(posedge clk) begin
 			mem_wp_addr    <= wr_split_addr;
 			mem_wp_be      <= wr_split_be;
 			mem_wp_data    <= wr_split_data;
+			mem_wp_vram    <= 0;
 			bus_miss_ack   <= 1;
 			bus_miss_rdata <= 0;
 		end
@@ -1074,7 +1084,8 @@ always @(posedge clk) begin
 				end
 				else if (bus_wr_direct) begin
 					mem_wp_valid <= 1;
-					mem_wp_addr  <= bus_sdram;
+					mem_wp_vram  <= bus_wr_vram;
+					mem_wp_addr  <= bus_wr_vram ? {6'd0, bus_addr[20:2]} : bus_sdram;
 					mem_wp_be    <= (4'b1111 << (3'd4 - bus_wr_bytes)) >> bus_addr[1:0];
 					mem_wp_data  <= bus_wr_left >> {bus_addr[1:0], 3'd0};
 					if (bus_wr_span) begin

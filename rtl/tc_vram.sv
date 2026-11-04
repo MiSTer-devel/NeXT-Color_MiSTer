@@ -54,6 +54,15 @@ module tc_vram
 	output reg        ack,
 	output reg [31:0] rdata,
 
+	// direct write push (clk_sys, tc_machine's store path): one write per
+	// cycle into the queue with no handshake; the caller pushes only while
+	// wq_room was high in the cycle it decided
+	input             wp_valid,
+	input      [20:2] wp_addr,
+	input       [3:0] wp_be,
+	input      [31:0] wp_data,
+	output            wq_room,        // at least two free slots
+
 	// video control (clk_sys, quasi-static)
 	input      [31:0] hreg,
 	input      [31:0] vreg,
@@ -102,6 +111,7 @@ reg [31:0] r_rdata;
 reg        c_done_seen = 0;
 
 // The posted-write queue (sdram_beat32's FIFO): eight entries on clk_sys,
+// fed by the beat port and by tc_machine's direct push; beat writes are
 // acked as they enter -- a DDR3 VRAM write cannot fault, and nothing else
 // reaches VRAM except through this port.  clk_ram drains them back to back
 // (several per turn against the scan-out) and frees a slot once DDR3 has
@@ -114,8 +124,10 @@ wire [54:0] wq_q;
 wire        wq_full, wq_empty;
 reg   [3:0] wq_wp = 0;             // clk_sys: next free slot (bit 3 = wrap)
 reg   [3:0] wq_rp = 0;             // clk_ram: next slot to drain
-wire        wq_push = !reset && req && we && !c_busy && !ack && !wq_full;
-wire [54:0] wq_push_data = {addr, wdata, be};
+// a beat write waits out the cycle a direct push takes the queue
+wire        wq_push_bus = !reset && !wp_valid && req && we && !c_busy && !ack && !wq_full;
+wire        wq_push = wp_valid || wq_push_bus;
+wire [54:0] wq_push_data = wp_valid ? {wp_addr, wp_data, wp_be} : {addr, wdata, be};
 `ifdef VERILATOR
 reg [54:0] wq_mem_model [0:7];
 integer wq_model_i;
@@ -154,13 +166,14 @@ end
 always @(posedge clk_sys) wq_rp_sys <= wq_rp_handoff;
 assign wq_full  = (wq_wp[2:0] == wq_rp_sys[2:0]) && (wq_wp[3] != wq_rp_sys[3]);
 assign wq_empty = (wq_wp == wq_rp_sys);
+// two free slots: one for a push already decided, one for this decision
+wire  [3:0] wq_used = wq_wp - wq_rp_sys;
+assign wq_room  = (wq_used <= 4'd6);
 
 always @(posedge clk_sys) begin
 	ack <= 0;
-	if (wq_push) begin
-		wq_wp <= wq_wp + 4'd1;
-		ack   <= 1;
-	end
+	if (wq_push) wq_wp <= wq_wp + 4'd1;
+	if (wq_push_bus) ack <= 1;
 	if (reset) begin
 		c_busy <= 0;
 		c_done_seen <= r_done_t;
