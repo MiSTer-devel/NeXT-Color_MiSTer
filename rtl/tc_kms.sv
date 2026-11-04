@@ -37,6 +37,9 @@
 //    kms_keydown -> rtc_request_power_down), no interrupt of its own.
 //  - A mouse packet waits while an unread keyboard event is pending, so
 //    mouse traffic cannot overwrite a keystroke.
+//  - The OSD's P1 Machine buttons: osd_power is a power key press (the same
+//    pulse as F10), osd_nmi sets NMI_RECEIVED directly, so it works whether
+//    or not the KMS is enabled and polling the keyboard.
 //
 //  Sources: Previous r1851 kms.c / kms.h / gui-sdl/sdlkeymap.c,
 //  rom-dissassembly/hardware-summary.md section 6 ("HS 6") and the ROM
@@ -144,6 +147,9 @@ module tc_kms #(
 	// from hps_io
 	input      [10:0] ps2_key,      // [10] toggle, [9] pressed, [8] extended, [7:0] set-2 code
 	input      [24:0] ps2_mouse,    // [24] toggle, [23:16] dy, [15:8] dx, [7:0] status
+	// from the OSD (P1 Machine buttons): one-cycle pulses
+	input             osd_power,    // the power key
+	input             osd_nmi,      // NMI: enter the ROM monitor
 	// outputs
 	output            int_keymouse, // -> interrupt status bit 3 (INT_KEYMOUSE)
 	output            nmi,          // -> interrupt status bit 31 (INT_NMI)
@@ -560,6 +566,10 @@ always_comb begin
 			st_km_n = st_km_n | KM_RECEIVED | KM_INT;
 		end
 	end
+
+	// the OSD buttons, after everything else in this cycle
+	if (osd_power) power_n = 1'b1;
+	if (osd_nmi)   st_km_n = st_km_n | NMI_RECEIVED;
 end
 
 always_ff @(posedge clk) begin

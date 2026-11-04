@@ -14,6 +14,9 @@
 //============================================================================
 
 module tc_memsys
+#(
+	parameter RAM_HZ = 99000000           // clk_ram: SDRAM refresh spacing
+)
 (
 	input             clk_sys,
 	input             clk_ram,       // 3x clk_sys, same PLL, phase aligned
@@ -98,7 +101,7 @@ wire is_vram = (mem_memsel == 2'd2);
 wire        sdr_ack;
 wire [31:0] sdr_rdata;
 
-sdram_beat32 sdr
+sdram_beat32 #(.RAM_HZ(RAM_HZ)) sdr
 (
 	.init      (sdram_init),
 	.clk_sys   (clk_sys),

@@ -32,6 +32,9 @@
 //============================================================================
 
 module tc_scr
+#(
+	parameter CLK_HZ = 33000000          // clk: the RTC's 1-second tick
+)
 (
 	input             clk,
 	input             reset,          // machine reset
@@ -92,7 +95,7 @@ always @(posedge clk) begin
 	end
 end
 
-tc_mccs1850 rtc
+tc_mccs1850 #(.CLK_HZ(CLK_HZ)) rtc
 (
 	.clk(clk),
 	.reset(reset),

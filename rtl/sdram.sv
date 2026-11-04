@@ -131,6 +131,7 @@ localparam STATE_FPRE_RAS  = 23;
 localparam STATE_CPPRE_RAS = 24;
 localparam STATE_FPRE_4    = 25;
 localparam STATE_CPPRE_4   = 26;
+localparam STATE_IDLE_6    = 27;
 
 
 // These live at module scope rather than inside the always block below.  As
@@ -261,12 +262,16 @@ always @(posedge clk) begin
 				cpbusy <= 0;
 			end
 			
+			// paired refresh: rank 0 the clock before, rank 1 here.  Six idle
+			// clocks follow, so rank 1's next ACTIVE is seven after its
+			// REFRESH (tRFC ~66 ns = 7 clocks at 99 MHz)
 			STATE_RFSH: begin
-				state         <= STATE_IDLE_5;
+				state         <= STATE_IDLE_6;
 				command       <= CMD_AUTO_REFRESH;
 				chip          <= 1;
 			end
 
+			STATE_IDLE_6: state <= STATE_IDLE_5;
 			STATE_IDLE_5: state <= STATE_IDLE_4;
 			STATE_IDLE_4: state <= STATE_IDLE_3;
 			STATE_IDLE_3: state <= STATE_IDLE_2;

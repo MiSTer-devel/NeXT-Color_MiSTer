@@ -15,6 +15,10 @@ module  pll_0002(
 	// from this), so no separate phase-shifted output is needed.
 	output wire outclk_1,
 
+	// interface 'outclk2' -- the AP68040's processor clock, 2x the machine
+	// clock with aligned edges (next_ap68040 runs its bus on every other edge).
+	output wire outclk_2,
+
 	// interface 'locked'
 	output wire locked
 );
@@ -23,14 +27,14 @@ module  pll_0002(
 		.fractional_vco_multiplier("false"),
 		.reference_clock_frequency("50.0 MHz"),
 		.operation_mode("direct"),
-		.number_of_clocks(2),
-		.output_clock_frequency0("33.000000 MHz"),
+		.number_of_clocks(3),
+		.output_clock_frequency0("25.000000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("99.000000 MHz"),
+		.output_clock_frequency1("75.000000 MHz"),
 		.phase_shift1("0 ps"),
 		.duty_cycle1(50),
-		.output_clock_frequency2("0 MHz"),
+		.output_clock_frequency2("50.000000 MHz"),
 		.phase_shift2("0 ps"),
 		.duty_cycle2(50),
 		.output_clock_frequency3("0 MHz"),
@@ -82,7 +86,7 @@ module  pll_0002(
 		.pll_subtype("General")
 	) altera_pll_i (
 		.rst	(rst),
-		.outclk	({outclk_1, outclk_0}),
+		.outclk	({outclk_2, outclk_1, outclk_0}),
 		.locked	(locked),
 		.fboutclk	( ),
 		.fbclk	(1'b0),

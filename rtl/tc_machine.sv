@@ -2,6 +2,7 @@
 //  tc_machine -- the NeXTstation Turbo Color: AP68040 on the TMC's 32-bit bus.
 //
 //  Structure from MacQuadra800_MiSTer rtl/quadra800.sv (the CPU bundle,
+//  here rtl/next_ap68040.sv;
 //  wombat_bus32, the service FSM, the platform beat port and its retained-
 //  line fast paths); the address map and every device are the Turbo
 //  Color's.  "HS n" = rom-dissassembly/hardware-summary.md section n.
@@ -44,6 +45,7 @@ module tc_machine
 )
 (
 	input         clk,
+	input         clk_cpu,                // the AP68040's clock, 2 x clk (next_ap68040 CPU2X)
 	input         nreset,
 	input         ce,
 	input         config_reset,           // power-up / OSD reset (NVRAM default image)
@@ -86,6 +88,8 @@ module tc_machine
 	// peripherals
 	input      [10:0] ps2_key,
 	input      [24:0] ps2_mouse,
+	input             osd_power,          // OSD P1 buttons: one-cycle pulses
+	input             osd_nmi,
 	input      [32:0] timestamp,
 	input             pot_on,             // NVRAM default: power-on test
 	input      [95:0] boot_cmd,           // NVRAM default: boot command
@@ -118,9 +122,11 @@ module tc_machine
 	input             fsd_ack,
 	output      [7:0] fsd_buff_din,
 
-	// Ethernet: the OSD "Connected" switch, and the bridge's mailbox port
-	// (one 64-bit DDR3 word at a time, clk_sys; tc_enet_ddr in the top)
+	// Ethernet: the OSD network interface (connected = not None; mode =
+	// next_enet_bridge NET_MODE), and the bridge's mailbox port (one 64-bit
+	// DDR3 word at a time, clk_sys; tc_enet_ddr in the top)
 	input             enet_connected,
+	input       [2:0] enet_mode,
 	output            enet_m_req,
 	output            enet_m_we,
 	output     [28:0] enet_m_addr,
@@ -199,8 +205,6 @@ function [26:2] ram_sdram;        // physical -> SDRAM longword address
 	end
 endfunction
 
-// SDRAM line tag -> the canonical physical address of that line
-wire [31:4] line_phys_tag = {4'h0, {1'b0, mem_line_tag[26:25]} + 3'd2, mem_line_tag[24:4]};
 
 //----------------------------------------------------------------------------
 // decode of a beat address; the table walker sees the same physical map
@@ -288,8 +292,12 @@ assign bus_ack   = bus_line_ack || bus_miss_ack || bus_ack_adapter;
 assign bus_rdata = bus_line_ack ? bus_line_rdata :
                    bus_miss_ack ? bus_miss_rdata : bus_rdata_adapter;
 
-wire        walker_req, walker_we;
-wire [31:0] walker_addr, walker_wdat;
+// The AP68040 walks its page tables over its own bus (they reach the
+// service FSM as ordinary CPU transactions): the wombat walker port is idle.
+wire        walker_req  = 1'b0;
+wire        walker_we   = 1'b0;
+wire [31:0] walker_addr = 32'd0;
+wire [31:0] walker_wdat = 32'd0;
 reg         walker_ack;
 reg  [31:0] walker_data;
 reg         walker_berr;
@@ -298,21 +306,31 @@ reg         cpu_berr;
 wire  [2:0] ipl;
 reg         snoop_stb;        // a DMA write landed (service FSM below)
 reg  [31:2] snoop_line;
+wire        snoop_full;       // the CPU's snoop queue: hold DMA beats
 
-wombat_cpu #(.AP040_FPU_REVISION(8'h41)) cpu (
+// DMA line flush (next_ap68040 SNOOP = 2): a DMA beat of a RAM line waits
+// until the line is flushed from the 68040's caches (dirty: written back)
+// with no core read of it since
+reg         fl_req;           // one clock
+reg  [31:4] fl_addr;
+reg         fl_wait;          // asked, fl_done not yet seen
+wire        fl_done, fl_dirty;
+wire [127:0] fl_line;
+wire        fill_stb;
+wire [31:4] fill_line;
+wire        sb_pending;
+reg         fl_ok;            // fl_addr is flushed and written back
+reg         wb_pend;          // fl_line is being written to RAM
+reg   [1:0] wb_k;
+reg [127:0] wb_line;
+
+next_ap68040 #(.FPU_REVISION(8'h41)) cpu (
 	.clk(clk),
+	.clk_cpu(clk_cpu),
 	.nreset(nreset),
-	.ce(ce),
-	.stall_hold(1'b0),
-	.dbg_stall_flt(),
 
 	.ipl(~ipl),
-	.ipl_autovector(1'b1),
 	.berr(cpu_berr),
-	.cache_line_valid(mem_line_valid),
-	.cache_line_tag(line_phys_tag),
-	.cache_line_data(mem_line_data),
-	.store_buffer_ok(1'b1),
 
 	.bus_req(bus_req),
 	.bus_write(bus_write),
@@ -324,22 +342,23 @@ wombat_cpu #(.AP040_FPU_REVISION(8'h41)) cpu (
 	.bus_ack(bus_ack),
 	.bus_rdata(bus_rdata),
 
-	.walker_req(walker_req),
-	.walker_we(walker_we),
-	.walker_addr(walker_addr),
-	.walker_wdat(walker_wdat),
-	.walker_ack(walker_ack),
-	.walker_data(walker_data),
-	.walker_berr(walker_berr),
-
 	.snoop_stb(snoop_stb),               // DMA write: drop the D-cache line
 	.snoop_addr({snoop_line, 2'b00}),
+	.snoop_full(snoop_full),
+
+	.fl_req(fl_req),
+	.fl_addr(fl_addr),
+	.fl_done(fl_done),
+	.fl_dirty(fl_dirty),
+	.fl_line(fl_line),
+	.fill_stb(fill_stb),
+	.fill_line(fill_line),
+	.sb_pending(sb_pending),
 
 	.nresetout(),
-	.nmi_ack_toggle(),
 	.cacr_out(),
 	.vbr_out(),
-	.debug_busy(),
+	.dbg_pc(),
 	.debug_fault(debug_fault),
 	.debug_halted(debug_halted),
 	.debug_status(debug_status),
@@ -439,7 +458,7 @@ wire [31:0] int_src = {int_tmc_nmi | int_kms_nmi,  // 31 INT_NMI
 // SCR1 / SCR2 / RTC
 wire [31:0] scr2;                      // SCR2's DSP bits -> tc_dsp
 wire [31:0] scr_rdata;  wire scr_ack;
-tc_scr scr (
+tc_scr #(.CLK_HZ(CLK_HZ)) scr (
 	.clk(clk), .reset(dev_rst), .config_reset(config_reset),
 	.stb(io_stb && (io_dev == D_SCR1 || io_dev == D_SCR2) && !io_tmc), .we(io_we),
 	.sel_scr2(io_dev == D_SCR2), .be(io_be), .wdata(io_wdata),
@@ -499,6 +518,7 @@ tc_kms #(.CLK_HZ(CLK_HZ)) kms (
 	.stb(io_stb && io_dev == D_KMS && !io_tmc), .we(io_we), .addr(io_addr[3:2]), .be(io_be), .wdata(io_wdata),
 	.rdata(kms_rdata), .ack(kms_ack),
 	.ps2_key(ps2_key), .ps2_mouse(ps2_mouse),
+	.osd_power(osd_power), .osd_nmi(osd_nmi),
 	.int_keymouse(int_keymouse), .nmi(int_kms_nmi), .power_key(kms_power_key),
 	.reset_req(reset_req), .dbg_cmd(),
 	.so_req(so_req), .so_ack(so_ack), .so_rdata(so_rdata), .so_avail(so_avail),
@@ -581,7 +601,7 @@ wire [28:0] br_m_addr;
 wire [63:0] br_m_wdata;
 
 // AT&T 7213 Ethernet (HS 8): rtl/tc_enet.sv, internal loopback for the
-// POST, and with the OSD's "Connected" a twisted-pair link through
+// POST, and with an OSD network interface other than None a twisted-pair link through
 // NeXT_MiSTer's bridge (rtl/next_enet_bridge.sv) to Main's next_enet daemon
 // (a DDR3 mailbox at $1FF00000).  Its data moves through tc_tdma's
 // Ethernet TX/RX channels.
@@ -593,7 +613,7 @@ wire [10:0] brx_len;
 wire  [7:0] brx_data;
 wire [47:0] enet_mac;
 next_enet_bridge #(.CLK_HZ(CLK_HZ)) enet_bridge (
-	.clk(clk), .reset(dev_rst), .enable(enet_connected),
+	.clk(clk), .reset(dev_rst), .enable(enet_connected), .net_mode(enet_mode),
 	.btx_req(btx_req), .btx_len(btx_len), .btx_addr(btx_addr), .btx_rd(btx_rd),
 	.btx_q(btx_q), .btx_ack(btx_ack), .btx_done(btx_done),
 	.brx_start(brx_start), .brx_len(brx_len), .brx_valid(brx_valid),
@@ -621,11 +641,10 @@ tc_enet enet (
 	.guest_mac(enet_mac)
 );
 
-// DSP56001 host port (Previous ioMemTabTurbo.c:130-137): rtl/tc_dsp.sv, the
-// 68040's side; the DSP runs on the ARM (Main_MiSTer support/next/next_dsp.cpp)
-// behind a DDR3 mailbox at $30400000.  NEXT_NO_DSP (qsf) leaves it out: the
-// registers read 0 as before the DSP work, and the Music Kit's DSP use is
-// parked (docs/DECISIONS.md "Sound and DSP").
+// DSP56001 (Previous ioMemTabTurbo.c:130-137): rtl/tc_dsp56k.sv, in the FPGA
+// (rtl/dsp56k, from Falcon_MiSTer).  NEXT_DSP_ARM (qsf): rtl/tc_dsp.sv, the
+// DSP on the ARM (Main_MiSTer support/next/next_dsp.cpp) via a DDR3 mailbox
+// at $30400000.  NEXT_NO_DSP: no DSP, its registers read 0.
 wire [31:0] dsp_rdata;  wire dsp_ack;
 wire        ds_m_req, ds_m_we;
 wire [28:0] ds_m_addr;
@@ -637,7 +656,7 @@ assign int_dsp = 1'b0;
 assign dd_req = 1'b0;  assign dd_we = 1'b0;  assign dd_wdata = 8'd0;
 assign ds_m_req = 1'b0;  assign ds_m_we = 1'b0;
 assign ds_m_addr = 29'd0;  assign ds_m_wdata = 64'd0;
-`else
+`elsif NEXT_DSP_ARM
 tc_dsp #(.CLK_HZ(CLK_HZ)) dsp (
 	.clk(clk), .reset(dev_rst),
 	.stb(io_stb && io_dev == D_DSP && !io_tmc), .we(io_we),
@@ -649,6 +668,18 @@ tc_dsp #(.CLK_HZ(CLK_HZ)) dsp (
 	.m_req(ds_m_req), .m_we(ds_m_we), .m_addr(ds_m_addr), .m_wdata(ds_m_wdata),
 	.m_rdata(enet_m_rdata), .m_ack(ds_m_ack)
 );
+`else
+tc_dsp56k #(.CLK_HZ(CLK_HZ)) dsp (
+	.clk(clk), .reset(dev_rst),
+	.stb(io_stb && io_dev == D_DSP && !io_tmc), .we(io_we),
+	.addr2(io_addr[2]), .be(io_be), .wdata(io_wdata),
+	.rdata(dsp_rdata), .ack(dsp_ack),
+	.scr2(scr2), .int_dsp(int_dsp),
+	.dd_req(dd_req), .dd_we(dd_we), .dd_wdata(dd_wdata), .dd_ack(dd_ack),
+	.dd_rdata(dd_rdata), .dd_avail(dd_avail), .dd_blkend(dd_blkend)
+);
+assign ds_m_req = 1'b0;  assign ds_m_we = 1'b0;
+assign ds_m_addr = 29'd0;  assign ds_m_wdata = 64'd0;
 `endif
 
 // The DDR3 mailbox port (tc_enet_ddr in the top) serves the Ethernet bridge
@@ -779,6 +810,8 @@ reg  [2:0] svc;
 reg        svc_walker;
 reg        svc_bus_direct;
 reg        svc_dma;           // the beat in S_MEM is tc_tdma's
+reg        svc_wb;            // the beat in S_MEM writes back a flushed line
+reg        fl_stale;          // the core read fl_addr's line since it was asked for
 reg [31:2] svc_addr;
 
 // The PC chip's DMA is the machine's other bus master (quadra800.sv's SONIC
@@ -807,7 +840,7 @@ wire [31:0] line_cpu_data = (b_addr[3:2] == 2'd0) ? mem_line_data[127:96] :
                             (b_addr[3:2] == 2'd2) ? mem_line_data[63:32]  :
                                                     mem_line_data[31:0];
 
-wire bus_ram_eligible = (svc == S_IDLE) && !walker_pend && !cpu_berr &&
+wire bus_ram_eligible = (svc == S_IDLE) && !walker_pend && !cpu_berr && !wb_pend &&
                         !bus_miss_ack && !bus_line_ack && !bus_adapter_active &&
                         !bus_ack_adapter && bus_req && !bus_write &&
                         (bus_size == 2'd2) && (bus_addr[1:0] == 2'b00) &&
@@ -839,7 +872,7 @@ wire        bus_wr_span  = (bus_wr_end > 3'd4);
 // decode and translation).  The rare store on the block's last longword
 // goes through the adapter like any other access.
 wire        bus_wr_nx_ok = ~&bus_addr[22:2];
-wire bus_wr_direct = (DIRECT_WRITES != 0) && (svc == S_IDLE) && !walker_pend && !cpu_berr &&
+wire bus_wr_direct = (DIRECT_WRITES != 0) && (svc == S_IDLE) && !walker_pend && !cpu_berr && !wb_pend &&
                      !bus_miss_ack && !bus_line_ack && !bus_adapter_active && !wr_split_pend &&
                      !bus_ack_adapter && bus_req && bus_write &&
                      (!bus_wr_span || bus_wr_nx_ok) &&
@@ -862,9 +895,15 @@ always @(posedge clk) begin
 	end
 end
 
-wire cpu_want = walker_pend || bus_first_miss || bus_wr_direct ||
-                (b_req && !b_ack && !cpu_berr && !line_cpu_wait);
-wire dma_take = dm_req && !dm_ack && !dm_err && !walker_pend && (dma_turn || !cpu_want);
+wire cpu_want = !wb_pend && (walker_pend || bus_first_miss || bus_wr_direct ||
+                (b_req && !b_ack && !cpu_berr && !line_cpu_wait));
+// a DMA beat of RAM waits for its line's flush
+wire dm_line_ok = fl_ok && (fl_addr == dm_addr[31:4]);
+// (and for the store buffer: a line the core pushed may still be in it)
+wire dm_flushed = !ram_present(dm_addr) || (dm_line_ok && !wb_pend && !sb_pending);
+wire dma_take = dm_req && !dm_ack && !dm_err && !walker_pend && !snoop_full && !wb_pend && dm_flushed &&
+                (dma_turn || !cpu_want);
+wire fill_hit = fill_stb && (fill_line == fl_addr);
 
 assign dbg_berr      = (svc == S_BERR);
 assign dbg_berr_addr = {svc_addr, 2'b00};
@@ -875,7 +914,16 @@ always @(posedge clk) begin
 		svc_walker     <= 0;
 		svc_bus_direct <= 0;
 		svc_dma        <= 0;
+		svc_wb         <= 0;
 		svc_addr       <= 0;
+		fl_req         <= 0;
+		fl_addr        <= 0;
+		fl_wait        <= 0;
+		fl_ok          <= 0;
+		fl_stale       <= 0;
+		wb_pend        <= 0;
+		wb_k           <= 0;
+		wb_line        <= 0;
 		dma_turn       <= 0;
 		dm_ack         <= 0;
 		dm_err         <= 0;
@@ -924,6 +972,30 @@ always @(posedge clk) begin
 		dm_ack       <= 0;
 		dm_err       <= 0;
 		snoop_stb    <= 0;
+		fl_req       <= 0;
+		// DMA line flush: ask for the line of the waiting DMA beat; a core
+		// line read of it afterwards makes it stale again
+		if (fill_hit) begin
+			fl_ok    <= 0;
+			fl_stale <= 1;
+		end
+		if (fl_done) begin
+			fl_wait <= 0;
+			if (fl_dirty) begin
+				wb_pend <= 1;
+				wb_k    <= 0;
+				wb_line <= fl_line;
+			end
+			else fl_ok <= !fl_stale && !fill_hit;
+		end
+		else if (!fl_wait && !wb_pend && dm_req && !dm_ack && !dm_err &&
+		         ram_present(dm_addr) && !dm_line_ok) begin
+			fl_req   <= 1;
+			fl_wait  <= 1;
+			fl_addr  <= dm_addr[31:4];
+			fl_ok    <= 0;
+			fl_stale <= 0;
+		end
 		if (wr_split_pend) begin
 			wr_split_pend  <= 0;
 			mem_wp_valid   <= 1;
@@ -937,9 +1009,23 @@ always @(posedge clk) begin
 
 		case (svc)
 		S_IDLE: begin
-			// walker first (it only runs mid-translation); a DMA beat takes
-			// the turn after each CPU beat, or an idle bus
-			if (dma_take) begin
+			// a flushed dirty line goes to RAM first; then the walker (it only
+			// runs mid-translation); a DMA beat takes the turn after each CPU
+			// beat, or an idle bus
+			if (wb_pend) begin
+				svc_wb     <= 1;
+				svc_dma    <= 0;
+				svc_walker <= 0;
+				svc_bus_direct <= 0;
+				mem_req    <= 1;
+				mem_write  <= 1;
+				mem_addr   <= ram_sdram({fl_addr, wb_k});
+				mem_be     <= 4'b1111;
+				mem_wdata  <= wb_line[127 - 32 * wb_k -: 32];
+				mem_memsel <= MSEL_RAM;
+				svc        <= S_MEM;
+			end
+			else if (dma_take) begin
 				svc_walker     <= 0;
 				svc_bus_direct <= 0;
 				dma_turn       <= 0;
@@ -1066,7 +1152,15 @@ always @(posedge clk) begin
 		end
 		S_MEM: if (mem_ack) begin
 			mem_req <= 0;
-			if (svc_dma) begin
+			if (svc_wb) begin
+				svc_wb <= 0;
+				wb_k   <= wb_k + 2'd1;
+				if (wb_k == 2'd3) begin
+					wb_pend <= 0;
+					fl_ok   <= !fl_stale && !fill_hit;
+				end
+			end
+			else if (svc_dma) begin
 				dm_ack    <= 1;
 				dm_rdata  <= mem_rdata;
 				snoop_stb <= mem_write;

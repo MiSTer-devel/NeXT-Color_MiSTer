@@ -52,6 +52,7 @@ wire  [31:0] rdata;
 wire         ack;
 logic [10:0] ps2_key = 11'd0;
 logic [24:0] ps2_mouse = 25'd0;
+logic        osd_power = 1'b0, osd_nmi = 1'b0;   // the OSD's P1 buttons
 wire         int_keymouse, nmi, power_key, reset_req;
 wire   [7:0] dbg_cmd;
 // sound out: a model of tc_tdma's sound-out channel (below)
@@ -312,7 +313,7 @@ end
 
 initial begin : test
 	logic [31:0] q;
-	logic  [7:0] b;
+	logic  [7:0] b, tx;
 	bit          to;
 	int          pc, rc, i;
 
@@ -456,9 +457,24 @@ initial begin : test
 	key(0, PS2_F10, 0);
 	check(power_cycles == pc + 1, "F10 break: no pulse");
 	expect_none("F10 break is not a KM event");
+	// the OSD's Power key button: the same single pulse, no KM event
+	@(negedge clk); osd_power = 1'b1; @(negedge clk); osd_power = 1'b0;
+	repeat (4) @(negedge clk);
+	check(power_cycles == pc + 2, "OSD Power key: one 1-cycle power_key pulse");
+	check(!int_keymouse && !nmi, "OSD Power key raises no interrupt");
+	expect_none("OSD Power key is not a KM event");
+	// the OSD's NMI button sets NMI_RECEIVED, even with the KMS disabled
+	rd8(R_TX, tx);
+	wr8(R_TX, tx & ~8'h02);                   // KMS_ENABLE off (a KMS reset)
+	@(negedge clk); osd_nmi = 1'b1; @(negedge clk); osd_nmi = 1'b0;
+	check(nmi, "OSD NMI drives nmi with the KMS disabled");
+	rd8(R_KM, b);      check(b == 8'h10, $sformatf("OSD NMI: KM status %02x", b));
+	ori8(R_KM, 8'h10); check(!nmi, "OSD NMI cleared by mon_clear_nmi");
+	wr8(R_TX, tx);                            // KMS_ENABLE again
+	rom_send_cmd(8'hC6, 32'h01FFFFF6);        // the keyboard back in the poll mask
 	key(1, PS2_DELETE, 1); expect_none("Delete is unassigned");
 	key(1, PS2_DELETE, 0); expect_none("Delete break");
-	check(power_cycles == pc + 1, "Delete is not a power key");
+	check(power_cycles == pc + 2, "Delete is not a power key");
 
 	// --- KMREG reads: Turbo revision, user poll ------------------------------
 	rom_send_cmd_wait(8'hC5, 32'hF0000000, to);

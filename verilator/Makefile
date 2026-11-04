@@ -10,12 +10,10 @@ V = verilator
 
 TOP  = --top-module emu
 RTL  = ../rtl
-AP   = ../rtl/ap68040/rtl
-APX  = ../rtl/ap68040/experimental
-V_INC = +incdir+$(RTL) +incdir+$(AP) -I$(AP)
+AP   = ../rtl/ap68040
+V_INC = +incdir+$(RTL) +incdir+$(RTL)/dsp56k +incdir+$(AP) +incdir+$(AP)/fpu +incdir+$(AP)/gen -I$(AP) -I$(AP)/fpu
 
 V_DEFINE = +define+SIMULATION=1 \
-	+define+AP040_EXPERIMENTAL_XSTORE=1 +define+AP040_EXPERIMENTAL_LEA=1 \
 	--timescale-override 1ps/1ps -Wno-TIMESCALEMOD -I$(RTL)
 V_DEFINE += -Wno-fatal -Wno-WIDTH -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-IMPLICIT \
 	-Wno-PINMISSING -Wno-UNUSEDSIGNAL -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
@@ -23,10 +21,9 @@ V_DEFINE += -Wno-fatal -Wno-WIDTH -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-IMPLICIT
 	-Wno-COMBDLY -Wno-INITIALDLY -Wno-SYNCASYNCNET -Wno-BLKLOOPINIT \
 	-Wno-MULTIDRIVEN -Wno-GENUNNAMED -Wno-BLKSEQ -Wno-DECLFILENAME
 V_DEFINE += --timing
-# --unroll-count: ap040_mmu.v clears the 128 ATC valid flops with a for loop of
-# delayed assignments (PFLUSHA, reset); above Verilator's default of 64 the loop
-# is not unrolled and the assignment is silently dropped (BLKLOOPINIT), so
-# PFLUSHA was a no-op in the sim (found 2026-09-26, open question 39).
+# --unroll-count: loops over more than Verilator's default of 64 elements are
+# otherwise not unrolled and their delayed assignments silently dropped
+# (BLKLOOPINIT; the old ap040_mmu.v's PFLUSHA, open question 39).
 V_OPT = --x-assign fast --x-initial fast --noassert -O3 --unroll-count 256
 
 # The HPS side of the SD slots (host/host_dpi.cpp) runs Main_MiSTer's own
@@ -70,26 +67,42 @@ V_SRC = \
 	$(RTL)/tc_scc.sv \
 	$(RTL)/tc_tdma.sv \
 	$(RTL)/tc_dsp.sv \
+	$(RTL)/tc_dsp56k.sv \
+	$(RTL)/dsp56k/dsp_ram.sv \
+	$(RTL)/dsp56k/dsp56k_rom.sv \
+	$(RTL)/dsp56k/dsp56k_alu.sv \
+	$(RTL)/dsp56k/dsp56k_dec.sv \
+	$(RTL)/dsp56k/dsp56k_core.sv \
+	$(RTL)/dsp56k/next_dsp_periph.sv \
 	$(RTL)/tc_scsi.sv \
 	$(RTL)/next_floppy.sv \
 	$(RTL)/next_enet_bridge.sv \
 	$(RTL)/next_ddram_arb.sv \
 	$(RTL)/tc_enet_ddr.sv \
-	$(RTL)/wombat_cpu.sv \
+	$(RTL)/next_ap68040.sv \
 	$(RTL)/wombat_store_buffer.sv \
 	$(RTL)/wombat_bus32.sv \
 	$(RTL)/sdram.sv \
 	$(RTL)/sdram_beat32.sv \
 	$(RTL)/dpram.v \
-	$(AP)/ap040_core.v \
-	$(AP)/ap040_bus_timeout.v \
-	$(AP)/ap040_regfile.v \
-	$(AP)/ap040_alu.v \
-	$(AP)/ap040_muldiv.v \
-	$(AP)/ap040_mmu.v \
-	$(AP)/ap040_cache.v \
-	$(AP)/ap040_fpu.v \
-	$(APX)/ap040_pipeline_integer.sv
+	$(AP)/ap68040_pkg.sv \
+	$(AP)/gen/ap68040_upkg.sv \
+	$(AP)/ap68040_alu.sv \
+	$(AP)/ap68040_alu_slow.sv \
+	$(AP)/ap68040_muldiv.sv \
+	$(AP)/ap68040_biu.sv \
+	$(AP)/ap68040_ram.sv \
+	$(AP)/ap68040_atc.sv \
+	$(AP)/ap68040_dmu.sv \
+	$(AP)/ap68040_predec.sv \
+	$(AP)/ap68040_fetch.sv \
+	$(AP)/ap68040_decode.sv \
+	$(AP)/ap68040_useq.sv \
+	$(AP)/fpu/ap040_fpu.v \
+	$(AP)/ap68040_fpif.sv \
+	$(AP)/ap68040_backend.sv \
+	$(AP)/ap68040_snoop.sv \
+	$(AP)/ap68040.sv
 
 C_SRC = sim_main.cpp $(HOST_SRC)
 

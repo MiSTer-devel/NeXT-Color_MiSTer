@@ -18,8 +18,12 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 //  Clocks (structure from MacQuadra800_MiSTer, MacQuadra800.sv):
-//    clk_sys  33.000 MHz  CPU, devices (the real Turbo bus rate)
-//    clk_ram  99.000 MHz  SDRAM controller, exactly 3 x clk_sys (same PLL)
+//    clk_sys  25.000 MHz  CPU bus, devices (real Turbo bus: 33 MHz; CLK_HZ
+//                         keeps the devices' real-time rates)
+//    clk_ram  75.000 MHz  SDRAM controller, exactly 3 x clk_sys (same PLL)
+//    clk_cpu  50.000 MHz  AP68040 core, 2 x clk_sys (same PLL; its bus runs
+//                         at clk_sys, rtl/next_ap68040.sv).  Sets the PLL:
+//                         ~95% full with the DSP, 57 MHz does not close.
 //    clk_vid 100.000 MHz  pixel clock, own PLL (rtl/pll_vid.v)
 //
 //  Memory (docs/DECISIONS.md):
@@ -66,46 +70,70 @@ assign BUTTONS = 0;
 localparam CONF_STR = {
 	"NeXT-Color;;",
 	"-;",
+	// MiSTer OSD standard (danifunker/hp9000-715_MiSTer docs/osd-standard.md).
+	// Settings other than the media, Input and the P1 buttons take effect at
+	// the next reset (cfg below).  Rows keep their status bits, so saved
+	// settings stay valid.
+	//
 	// SC slots: Main remembers the mounted image in config/NeXT-Color.s<n>
 	// and re-mounts it at core start, so the ROM can boot from the disk.
 	// Slot n = SCSI target n; slot 3 is the CD-ROM (Main's NEXT_CDROM_SLOT,
 	// which also carries the target-response windows, rtl/tc_scsi.sv).
-	"SC0,HDAVHDIMG,SCSI disk 0;",
-	"SC1,HDAVHDIMG,SCSI disk 1;",
-	"S3,ISOCUEBINCHD,CD-ROM;",
+	"SC0,HDAVHDIMG,Pri. disk (ID 0);",
+	"SC1,HDAVHDIMG,Disk (ID 1);",
+	"SC3,ISOCUEBINCHD,CD-ROM (ID 3);",
 	// slot 4: the 2.88 MB floppy drive (rtl/next_floppy.sv; 720K, 1.44M and
 	// 2.88M images, the geometry follows the size).  Same slot and
 	// extensions as the mono NeXT core.
-	"S4,IMGIMAFLPVFDFD ,Floppy;",
+	"SC4,IMGIMAFLPVFDFD ,Floppy;",
+	// ioctl index 1, not remembered (boot0.rom is index 0, below)
+	"F1,ROMBIN,Load ROM;",
 	"-;",
-	// The first entry is the default.  32 MB fits every SDRAM module (64 MB
-	// needs a 64 or 128 MB module, 128 MB a 128 MB one); "v,1" below drops
-	// the settings saved with the old order (64 MB, Prompt, Normal first).
-	"O[4:3],Memory,32 MB,64 MB,128 MB,16 MB;",
-	"O[5],Power-on self test,On,Off;",
-	"O[8:6],Boot device,SCSI disk,Prompt (NeXT>),Network,Floppy;",
-	// Ethernet: Main's next_enet daemon reads the mode from status[54:52]
-	// (0 off, 1 eth0 shared + MAC filter, ...); this switch is bit 52 alone,
-	// so Connected = mode 1.  rtl/tc_enet.sv: a twisted-pair link.
-	"O[52],Ethernet,Disconnected,Connected;",
+	// The first entry is the default.  32 MB fits every SDRAM module; a
+	// larger choice is capped at the module's size (mem_rank below).  "v,1"
+	// drops settings saved with the old order (64 MB, Prompt, Normal first).
+	"O[4:3],Memory,32MB,64MB,128MB,16MB;",
+	// Network interface: latched (cfg), passed to Main's next_enet daemon as
+	// NET_MODE (rtl/next_enet_bridge.sv).  None unplugs the cable
+	// (rtl/tc_enet.sv).  No wlan0: Main's bridge has none.  Bits 54:52 are
+	// the old Ethernet switch and Main's mono-core status mode: never reuse.
+	// Older saved settings read 0 = eth0.
+	"O[57:55],Network interface,eth0,None,eth1,macvlan,tap0;",
 	"-;",
-	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"P1,Machine;",
+	"P2,Video;",
+	"P3,Input;",
+	"P5,Advanced;",
+	"-;",
+	"h0-,Changes pending;",
+	"R[0],Apply and reset;",
+
+	// buttons (status pulses while held): power key (as F10), NMI (ROM
+	// monitor, as F11)
+	"P1T[10],Power key;",
+	"P1T[11],NMI (monitor);",
+
 	// V-Integer first (the default): 1:1 1120x832 on a 1080p display.
-	"O[125:123],Scale,V-Integer,Normal,Narrower HV-Integer,Wider HV-Integer;",
-	"-;",
-	"F1,ROMBIN,Load boot ROM;",
-	"-;",
-	"T[0],Reset;",
-	"R[0],Reset and close OSD;",
+	"P2O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"P2O[125:123],Scale,V-Integer,Normal,Narrower HV-Integer,Wider HV-Integer;",
+
+	// Input acts at once (not latched)
+	"P3O[9],Swap Alt/Win keys,No,Yes;",
+
+	"P5O[8:6],Boot device,SCSI disk,Prompt,Network,Floppy;",
+	"P5O[5],Self test,On,Off;",
+
 	"v,1;",
 	"V,v",`BUILD_DATE
 };
 
 wire   [1:0] buttons;
 wire [127:0] status;
+wire         cfg_pending;      // a latched setting waits for Apply and reset
 wire  [10:0] ps2_key;
 wire  [24:0] ps2_mouse;
 wire  [32:0] timestamp;
+wire  [15:0] sdram_sz;         // Main's SDRAM module size (UIO_SET_MEMSZ)
 
 wire        ioctl_download;
 wire [15:0] ioctl_index;
@@ -144,11 +172,12 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(0), .VDNUM(5)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask(16'd0),
+	.status_menumask({15'd0, cfg_pending}),
 
 	.ps2_key(ps2_key),
 	.ps2_mouse(ps2_mouse),
 	.TIMESTAMP(timestamp),
+	.sdram_sz(sdram_sz),
 
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_index),
@@ -177,13 +206,16 @@ assign LED_DISK = {1'b0, sd_busy | sd_ack_v[4]};
 
 ///////////////////////   CLOCKS   ///////////////////////////////
 
-wire clk_sys, clk_ram, pll_locked;
+localparam CLK_SYS_HZ = 25000000;   // rtl/pll/pll_0002.v outclk_0
+
+wire clk_sys, clk_ram, clk_cpu, pll_locked;
 pll pll
 (
 	.refclk(CLK_50M),
 	.rst(0),
 	.outclk_0(clk_sys),
 	.outclk_1(clk_ram),
+	.outclk_2(clk_cpu),
 	.locked(pll_locked)
 );
 
@@ -199,7 +231,7 @@ pll_vid pllv
 ///////////////////////   BOOT ROM   /////////////////////////////
 
 // boot0.rom (or boot.rom) is ioctl index 0, loaded by the Main at core start
-// from games/NeXT-Color/; the OSD "Load boot ROM" entry is index 1, with the
+// from games/NeXT-Color/; the OSD "Load ROM" entry is index 1, with the
 // file-extension number in bits [15:6] (.BIN = $41).  Main also sends
 // boot1/2/3.rom at start as $40/$80/$C0: those are not the boot ROM (a
 // boot1.rom copied from the mono NeXT core is a 68030 ROM and left the
@@ -236,15 +268,44 @@ always @(posedge clk_sys) begin
 	reset        <= config_reset | (kms_reset_cnt != 0);
 end
 
-// Machine configuration, sampled while the machine is in reset so the ROM
-// never sees it change under it (the MacQuadra800 lesson).
+// The settings the machine runs with, latched in configuration reset (Apply
+// and reset, the board button, core start, ROM load) so the ROM never sees
+// one change.  The KMS magic reset keeps them, as it keeps the NVRAM.
+// cfg_pending ("Changes pending", menumask bit 0): a latched field differs.
+reg [125:0] cfg = 126'd0;
+always @(posedge clk_sys) if (config_reset) cfg <= status[125:0];
+assign cfg_pending = {status[8:3], status[57:55], status[125:121]} !=
+                     {cfg[8:3],    cfg[57:55],    cfg[125:121]};
+
+// Network interface: OSD order eth0, None, eth1, macvlan, tap0 -> Main's
+// NB_MODE_ 1, 0, 2, 3, 4 (support/next/next_enet.cpp).
+reg [2:0] net_mode;
+always @(*) case (cfg[57:55])
+	3'd0:    net_mode = 3'd1;   // eth0 (shared, promiscuous + the MAC filter)
+	3'd2:    net_mode = 3'd2;   // eth1
+	3'd3:    net_mode = 3'd3;   // macvlan
+	3'd4:    net_mode = 3'd4;   // tap0
+	default: net_mode = 3'd0;   // None
+endcase
+wire net_connected = (net_mode != 3'd0);
+
+// Memory, capped at the SDRAM module (more makes NeXTSTEP panic).  Ranks:
+// 0 = 16 MB, 1 = 32, 2 = 64, 3 = 128; OSD order 32, 64, 128, 16 MB is
+// rank - 1.  sdram_sz[15] = module known, [1:0] 1/2/3 = 32/64/128 MB
+// (sys/hps_io.sv); an unknown module is not capped.
+wire [1:0] mem_want = status[4:3] + 2'd1;
+wire [1:0] mem_max  = !sdram_sz[15]          ? 2'd3 :
+                      (sdram_sz[1:0] == 2'd0) ? 2'd1 : sdram_sz[1:0];
+wire [1:0] mem_rank = (mem_want > mem_max) ? mem_max : mem_want;
+
+// Machine configuration, sampled while the machine is in reset.
 reg  [1:0] ram_cfg  = 2'd0;
 reg        pot_on   = 1'b1;
 reg [95:0] boot_cmd = 96'd0;
 always @(posedge clk_sys) if (config_reset) begin
-	// OSD order 32, 64, 128, 16 MB -> ram_cfg 3, 0, 1, 2 (0 = 64 MB, 1 = 128 MB,
-	// 2 = 16 MB, 3 = 32 MB, rtl/tc_mccs1850.sv)
-	ram_cfg <= status[4:3] - 2'd1;
+	// rank 1, 2, 3, 0 (32, 64, 128, 16 MB) -> ram_cfg 3, 0, 1, 2 (0 = 64 MB,
+	// 1 = 128 MB, 2 = 16 MB, 3 = 32 MB, rtl/tc_mccs1850.sv)
+	ram_cfg <= mem_rank - 2'd2;
 	pot_on  <= ~status[5];
 	case (status[8:6])                      // OSD order: SCSI disk, Prompt, Network, Floppy
 	3'd0:    boot_cmd <= {"sd", 80'd0};
@@ -253,6 +314,25 @@ always @(posedge clk_sys) if (config_reset) begin
 	default: boot_cmd <= 96'd0;             // empty: the ROM stops at NeXT>
 	endcase
 end
+
+// The P1 Machine buttons: a press is a rising edge of the T bit.
+reg  [11:10] osd_btn_d = 2'b00;
+always @(posedge clk_sys) osd_btn_d <= status[11:10];
+wire osd_power = status[10] & ~osd_btn_d[10];
+wire osd_nmi   = status[11] & ~osd_btn_d[11];
+
+// Input: Swap Alt/Win keys (status[9], at once).  Win = NeXT Command, Alt =
+// Alternate (rtl/tc_kms.sv).  ps2_key [8] = extended, [7:0] = set-2 code.
+function automatic [8:0] alt_win(input [8:0] k);
+	case (k)
+		9'h011: alt_win = 9'h11F;   // left Alt -> left GUI
+		9'h11F: alt_win = 9'h011;
+		9'h111: alt_win = 9'h127;   // right Alt -> right GUI
+		9'h127: alt_win = 9'h111;
+		default: alt_win = k;
+	endcase
+endfunction
+wire [10:0] kbd_key = status[9] ? {ps2_key[10:9], alt_win(ps2_key[8:0])} : ps2_key;
 
 // video-domain reset: two-flop synchronizer of the PLL lock
 reg vrst_meta = 1, vrst = 1;
@@ -289,9 +369,10 @@ wire   [7:0] pal_d;
 wire        vbl_pulse;
 wire        led;
 
-tc_machine machine
+tc_machine #(.CLK_HZ(CLK_SYS_HZ)) machine
 (
 	.clk(clk_sys),
+	.clk_cpu(clk_cpu),
 	.nreset(~reset),
 	.ce(1'b1),
 	.config_reset(config_reset),
@@ -324,8 +405,10 @@ tc_machine machine
 	.pal_d(pal_d),
 	.vbl_pulse(vbl_pulse),
 
-	.ps2_key(ps2_key),
+	.ps2_key(kbd_key),
 	.ps2_mouse(ps2_mouse),
+	.osd_power(osd_power),
+	.osd_nmi(osd_nmi),
 	.timestamp(timestamp),
 	.pot_on(pot_on),
 	.boot_cmd(boot_cmd),
@@ -349,7 +432,8 @@ tc_machine machine
 	.fsd_wr(fsd_wr),
 	.fsd_ack(sd_ack_v[4]),
 	.fsd_buff_din(fsd_buff_din),
-	.enet_connected(status[52]),
+	.enet_connected(net_connected),
+	.enet_mode(net_mode),
 	.enet_m_req(enet_m_req),
 	.enet_m_we(enet_m_we),
 	.enet_m_addr(enet_m_addr),
@@ -421,7 +505,7 @@ tc_enet_ddr enet_ddr
 	.DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE), .DDRAM_WE(DDRAM_WE)
 );
 
-tc_memsys memsys
+tc_memsys #(.RAM_HZ(3 * CLK_SYS_HZ)) memsys
 (
 	.clk_sys(clk_sys),
 	.clk_ram(clk_ram),
@@ -451,7 +535,7 @@ tc_memsys memsys
 	.mem_line_pending_tag(mem_line_pending_tag),
 
 	// boot.rom is ioctl index 0 (the Main loads games/NeXT-Color/boot.rom at
-	// core start), the OSD "Load boot ROM" entry is index 1.  Byte-wide
+	// core start), the OSD "Load ROM" entry is index 1.  Byte-wide
 	// ioctl (WIDE=0): the even byte is held and written with the odd one,
 	// big-endian (file byte 0 = bits 15:8 of the first halfword).
 	.rom_we(ioctl_download && rom_index && ioctl_wr && ioctl_addr[0] && ioctl_addr[26:17] == 0),
@@ -507,10 +591,11 @@ assign VGA_VS = ~vga_vs;
 // 35:26, square pixels (the mono core's lesson: a 4:3 declaration squeezes
 // 1120 columns into 1109).  "Normal" scale fills the output height with the
 // right aspect: 1454x1080 on 1080p, 969x720 on 720p.
-wire [1:0] ar = status[122:121];
+// Both latched (cfg).
+wire [1:0] ar = cfg[122:121];
 // OSD order V-Integer, Normal, ... -> video_freak's 1, 0, 2, 3
-wire [2:0] scale = (status[125:123] == 3'd0) ? 3'd1 :
-                   (status[125:123] == 3'd1) ? 3'd0 : status[125:123];
+wire [2:0] scale = (cfg[125:123] == 3'd0) ? 3'd1 :
+                   (cfg[125:123] == 3'd1) ? 3'd0 : cfg[125:123];
 video_freak video_freak
 (
 	.CLK_VIDEO(clk_vid),

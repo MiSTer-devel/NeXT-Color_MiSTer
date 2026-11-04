@@ -380,18 +380,25 @@ static void monitor() {
 }
 
 // ------------------------------------------------------------------ clocking
-// One tick = half a clk_ram period.  clk_ram toggles every tick, clk_sys
-// every third tick; both start low, so their rising edges coincide every
-// third clk_ram rise.
+// One tick = a quarter of a clk_ram period.  clk_ram toggles every second
+// tick, clk_cpu (the AP68040's 2 x clk_sys) every third, clk_sys every sixth;
+// all start low, so their rising edges coincide as the PLL's do.  Ticks with
+// no edge are skipped.
 static uint64_t tick = 0;
 
 static void step_tick() {
-	tick++;
-	top->clk_ram = !top->clk_ram;
-	bool sys_edge = (tick % 3) == 0;
+	bool ram_edge, cpu_edge, sys_edge;
+	do {
+		tick++;
+		ram_edge = (tick % 2) == 0;
+		cpu_edge = (tick % 3) == 0;
+		sys_edge = (tick % 6) == 0;
+	} while (!ram_edge && !cpu_edge);
+	if (ram_edge) top->clk_ram = !top->clk_ram;
+	if (cpu_edge) top->clk_cpu = !top->clk_cpu;
 	if (sys_edge) top->clk_sys = !top->clk_sys;
 	top->eval();
-	if (top->clk_ram) {
+	if (ram_edge && top->clk_ram) {
 		vga_clock();
 #ifdef SIM_GUI
 		video.Clock(!top->VGA_DE, false, top->VGA_HS, top->VGA_VS,
@@ -506,6 +513,7 @@ int main(int argc, char** argv) {
 
 	top = new Vemu;
 	top->clk_ram = 0;
+	top->clk_cpu = 0;
 	top->clk_sys = 0;
 	top->reset = 1;
 	top->config_reset = 1;

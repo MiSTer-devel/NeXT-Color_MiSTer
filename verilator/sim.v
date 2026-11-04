@@ -17,6 +17,7 @@
 module emu
 (
 	input         clk_sys,
+	input         clk_cpu,       // the AP68040's clock, 2 x clk_sys (sim_main.cpp)
 	input         clk_ram,
 	input         reset,          // machine reset (held by sim_main.cpp)
 	input         config_reset,   // power-up: NVRAM default image
@@ -150,6 +151,7 @@ wire        fsd_ack = m_ack &  m_flp;
 tc_machine machine
 (
 	.clk(clk_sys),
+	.clk_cpu(clk_cpu),
 	.nreset(~reset),
 	.ce(1'b1),
 	.config_reset(config_reset),
@@ -184,6 +186,8 @@ tc_machine machine
 
 	.ps2_key(ps2_key),
 	.ps2_mouse(ps2_mouse),
+	.osd_power(1'b0),
+	.osd_nmi(1'b0),
 	.timestamp(timestamp),
 	.pot_on(pot_on),
 	.boot_cmd(boot_cmd),
@@ -208,6 +212,7 @@ tc_machine machine
 	.fsd_ack(fsd_ack),
 	.fsd_buff_din(fsd_buff_din),
 	.enet_connected(enet_connected),
+	.enet_mode(enet_connected ? 3'd1 : 3'd0),
 	.enet_m_req(enet_m_req),
 	.enet_m_we(enet_m_we),
 	.enet_m_addr(enet_m_addr),
@@ -240,13 +245,14 @@ assign dbg_a0    = debug_status[223:192];
 assign dbg_state = debug_status[231:224];
 assign dbg_video_enable = video_enable;
 
-// the core's exception entry registers (read by sim_main.cpp's [EXC] log)
-assign dbg_pc_i     = machine.cpu.core.pc_i;
-assign dbg_exc_vec  = machine.cpu.core.exc_vec;
-assign dbg_exc_irq  = machine.cpu.core.exc_is_irq;
-assign dbg_exc_fmt  = machine.cpu.core.exc_fmt;
-assign dbg_exc_spc  = machine.cpu.core.exc_spc;
-assign dbg_exc_addr = machine.cpu.core.exc_addr;
+// (the pipelined AP68040: dbg_pc is the PC of the last retired instruction;
+// its exception entry is not exported, so the [EXC] log stays quiet)
+assign dbg_pc_i     = machine.cpu.cpu.dbg_pc;
+assign dbg_exc_vec  = 0;
+assign dbg_exc_irq  = 0;
+assign dbg_exc_fmt  = 0;
+assign dbg_exc_spc  = 0;
+assign dbg_exc_addr = 0;
 
 // ---------------------------------------------------------------- memory
 wire [15:0] SDRAM_DQ;
@@ -255,7 +261,7 @@ wire        SDRAM_DQML, SDRAM_DQMH;
 wire  [1:0] SDRAM_BA;
 wire        SDRAM_nCS, SDRAM_nWE, SDRAM_nRAS, SDRAM_nCAS, SDRAM_CKE, SDRAM_CLK;
 
-// +enet: the OSD "Ethernet: Connected" (the DDR3 model echoes each frame
+// +enet: the OSD "Network interface: eth0" (the DDR3 model echoes each frame
 // the guest sends back to it as a received one, see ddr3_model.sv)
 reg         enet_connected = 1'b0;
 initial if ($test$plusargs("enet")) enet_connected = 1'b1;
@@ -283,6 +289,7 @@ tc_memsys memsys
 	.clk_vid(clk_vid),
 	.reset(reset),
 	.reset_vid(sdram_init),
+	.ddr_hold(1'b0),
 	.sdram_init(sdram_init),
 
 	.mem_req(mem_req),
@@ -347,7 +354,7 @@ tc_memsys memsys
 
 tc_enet_ddr enet_ddr
 (
-	.clk_sys(clk_sys), .clk_ram(clk_ram), .reset_ram(reset),
+	.clk_sys(clk_sys), .clk_ram(clk_ram), .ddr_hold(1'b0),   // no DDRAM terminator here
 	.s_req(enet_m_req), .s_we(enet_m_we), .s_addr(enet_m_addr), .s_wdata(enet_m_wdata),
 	.s_rdata(enet_m_rdata), .s_ack(enet_m_ack),
 	.a_busy(va_busy), .a_burstcnt(va_burstcnt), .a_addr(va_addr), .a_dout(va_dout),

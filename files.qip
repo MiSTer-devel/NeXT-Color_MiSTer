@@ -4,10 +4,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE NeXT-Color.sv
 set_global_assignment -name QIP_FILE rtl/pll.qip
 set_global_assignment -name VERILOG_FILE rtl/pll_vid.v
 
-# CPU: the MacQuadra800 AP68040 tree and its wrapper (rtl/ap68040/UPSTREAM.md)
-set_global_assignment -name QIP_FILE rtl/ap68040/rtl/ap040.qip
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/ap68040/experimental/ap040_pipeline_integer.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/wombat_cpu.sv
+# CPU: the pipelined AP68040 (rtl/ap68040/UPSTREAM.md) and its NeXT bus adapter
+set_global_assignment -name QIP_FILE rtl/ap68040/ap68040.qip
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/next_ap68040.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/wombat_store_buffer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/wombat_bus32.sv
 set_global_assignment -name VERILOG_FILE rtl/dpram.v
@@ -35,6 +34,13 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/tc_enet.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tc_scc.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tc_tdma.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tc_dsp.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tc_dsp56k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp_ram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp56k_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp56k_alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp56k_dec.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp56k_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/next_dsp_periph.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tc_scsi.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/next_floppy.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/next_enet_bridge.sv

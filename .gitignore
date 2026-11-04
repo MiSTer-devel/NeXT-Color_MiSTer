@@ -81,3 +81,6 @@ verilator/*.fst
 verilator/*.vcd
 verilator/screenshot_*.png
 verilator/rom_syms.txt
+
+# tb_fl build output (verilator/cpu/fl/run.sh OUT=...)
+verilator/cpu/fl/obj*/

@@ -48,13 +48,12 @@ set_global_assignment -name ECO_OPTIMIZE_TIMING ON
 set_global_assignment -name PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
 set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
-set_global_assignment -name SEED 7
+set_global_assignment -name SEED 2
 
 # Fitter recipe and build switches from MacQuadra800_MiSTer (its release recipe,
 # minus MISTER_DISABLE_SHADOWMASK and the other switches that need its patched sys/,
 # and minus MISTER_DOWNSCALE_NN: 832 lines onto 720p is a downscale, and text
 # needs the filtered one).
-# The AP040_EXPERIMENTAL_* macros match the validated Quadra CPU build.
 # Seed history (full compiles):
 #   seed 1  (1be854e, 2026-09-26): 34,974 ALMs (83%), 263 M10K; clk_sys -0.068 ns
 #           (TNS -0.106, all inside ap040_core epf_data), HDMI -0.069 ns (sys/),
@@ -102,6 +101,16 @@ set_global_assignment -name SEED 7
 #     seed 6: setup -1.253, hold -1.212.
 #     seed 7: 38,755 ALMs (92%): TIMING MET, worst +0.095 ns (HDMI), hold
 #             +0.222.  rbf md5 264728c0.  Release 20261010.
+#   fff7bc2 (the pipelined AP68040 in place of ap040_core/wombat_cpu), 2026-10-15:
+#     seed 7: 35,544 ALMs (85%), LABs 4,050 (97%), 310 M10K, 61 DSP; the CPU
+#             22,152 ALMs.  TIMING MET, worst setup +0.475 (HDMI), emu pll
+#             +0.597/+0.982, hold +0.154.  rbf md5 67b26cd8.  Not yet on hardware.
+#   1594e6f (AP68040 upstream main c21d1e8 + PR #10), 2026-10-19:
+#     seed 7: 32,609 ALMs (78%): hold -0.430 (clk_ram): TIMING NOT MET.
+#     seed 3: 32,610 ALMs (78%): TIMING MET, worst setup +0.343, hold +0.149.
+#             rbf md5 c0aea5d4.  Hardware: desktop 3 of 4 boots.
+#   d4c2995 + AP68040_DC_WRITETHROUGH, seed 3: 32,561 ALMs (78%), TIMING MET.
+#             rbf md5 afa02a1b.  Hardware: desktop 6 of 6 boots.
 set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ALWAYS
 set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ADAPTIVE=1"
 set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ALSA=1"
@@ -112,10 +121,19 @@ set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_YC=1"
 # No OSD on the analog output (HDMI keeps it): sys/sys_top.v carries
 # MacQuadra800_MiSTer's MISTER_DISABLE_VGA_OSD switch; ~514 ALMs (2026-09-27).
 set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_VGA_OSD=1"
-# the DSP56001 (tc_dsp + Main next_dsp) is parked: its registers read 0
-set_global_assignment -name VERILOG_MACRO "NEXT_NO_DSP=1"
-set_global_assignment -name VERILOG_MACRO "AP040_EXPERIMENTAL_XSTORE=1"
-set_global_assignment -name VERILOG_MACRO "AP040_EXPERIMENTAL_LEA=1"
+# the DSP56001 runs in the FPGA (tc_dsp56k + rtl/dsp56k).  NEXT_DSP_ARM=1
+# selects the DSP on the ARM instead (tc_dsp + Main next_dsp), NEXT_NO_DSP=1
+# leaves it out (registers read 0)
+# The pipelined AP68040 (rtl/next_ap68040.sv), as Minimig-AGA's AP68040 build:
+# no register retiming in the CPU (it adds ~6,000 registers for timing the core
+# does not need at 33 MHz; it closes 57 MHz without), synthesized for area.
+# Data cache write-through: next_ap68040 sets the core's DC_WRITETHROUGH (DMA
+# reads are not snooped).  Hardware boot loops, 2026-10-19, NeXTSTEP 3.3 on a
+# dirty disk (fsck + reboot each time), 15 min limit: copyback, snoop on 3/4
+# (one hang at "Loading from disk"); copyback, snoop off 4/4; write-through,
+# snoop on 6/6 (524-528 s); 20261010 4/4.
+set_instance_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF -to "emu:emu|tc_machine:machine|next_ap68040:cpu|ap68040:cpu"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "emu:emu|tc_machine:machine|next_ap68040:cpu|ap68040:cpu"
 
 #set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
 

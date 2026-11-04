@@ -46,6 +46,9 @@
 //============================================================================
 
 module sdram_beat32
+#(
+	parameter RAM_HZ = 99000000           // clk_ram, for the refresh spacing
+)
 (
 	input             init,          // hold the controller in its power-up sequence
 	input             clk_sys,
@@ -90,15 +93,17 @@ module sdram_beat32
 	output            SDRAM_CLK
 );
 
-// Start each refresh slot at 764 cycles.  A BL8 already in flight can defer
-// the command by up to eight clocks; this guard keeps the worst observed gap
-// within the SDRAM's 7.8 us distributed-refresh interval at 99 MHz.
+// Start each refresh slot every 7.72 us (764 cycles at 99 MHz).  A BL8
+// already in flight can defer the command by up to eight clocks; this guard
+// keeps the worst observed gap within the SDRAM's 7.8 us distributed-refresh
+// interval.
+localparam [9:0] REF_SLOT = (RAM_HZ / 1000) * 772 / 100000;   // 764 @ 99 MHz, 660 @ 85.5 MHz
 reg        refresh = 0;
 reg  [9:0] refcnt  = 0;
 
 always @(posedge clk_ram) begin
 	refcnt <= refcnt + 1'b1;
-	if (refcnt == 10'd763) begin
+	if (refcnt == REF_SLOT - 10'd1) begin
 		refcnt  <= 0;
 		refresh <= ~refresh;
 	end
