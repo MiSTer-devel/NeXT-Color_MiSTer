@@ -224,15 +224,26 @@ wire [31:0] c_addr, c_wdata, c_rdata;
 wire  [2:0] c_fc;
 wire        c_berr = berr;
 
-assign c_req   = (cst == C_REQ);
-assign c_write = !xrd;
-assign c_instr = xcode;
-assign c_fc    = xfc;
-assign c_size  = (xsiz == SIZ_B) ? 2'd0 : (xsiz == SIZ_W) ? 2'd1 : 2'd2;
-assign c_addr  = x_line ? {xa[31:4], lw, 2'b00} : xa;
+// A posted store (a write to [POST_LO, POST_HI), never a bus error) goes to
+// the store buffer in the clock its TS is seen, from the bus as the core
+// drives it (A, SIZ, TM and the first long word of D are valid with TS):
+// the buffer takes it and acknowledges in that clock, and TA follows at
+// once (zero wait states).  With the buffer full it waits in C_REQ.
+wire        ts_post = (cst == C_IDLE) && !ts_n && !rw_n && (tt != 2'd3) &&
+                      (a_o >= POST_LO) && (a_o < POST_HI);
+wire  [1:0] p_siz   = ts_post ? siz  : xsiz;
+wire [31:0] p_a     = ts_post ? a_o  : xa;
+
+assign c_req   = (cst == C_REQ) || ts_post;
+assign c_write = ts_post || !xrd;
+assign c_instr = ts_post ? 1'b0 : xcode;
+assign c_fc    = ts_post ? tm_fc(tt, tm) : xfc;
+assign c_size  = (p_siz == SIZ_B) ? 2'd0 : (p_siz == SIZ_W) ? 2'd1 : 2'd2;
+assign c_addr  = ts_post ? ((siz == SIZ_LINE) ? {a_o[31:2], 2'b00} : a_o) :
+                 x_line  ? {xa[31:4], lw, 2'b00} : xa;
 // write data off the lanes (bs: D31-D24 is the byte at A1-A0 = 0)
-assign c_wdata = (xsiz == SIZ_B) ? {24'd0, d_o[31 - 8 * xa[1:0] -: 8]} :
-                   (xsiz == SIZ_W) ? {16'd0, xa[1] ? d_o[15:0] : d_o[31:16]} : d_o;
+assign c_wdata = (p_siz == SIZ_B) ? {24'd0, d_o[31 - 8 * p_a[1:0] -: 8]} :
+                   (p_siz == SIZ_W) ? {16'd0, p_a[1] ? d_o[15:0] : d_o[31:16]} : d_o;
 
 // read data onto every lane
 wire [31:0] rd_lanes = (xsiz == SIZ_B) ? {4{c_rdata[7:0]}} :
@@ -297,6 +308,13 @@ always @(posedge pclk) if (bclk_en) begin
 						xlast <= 1'b1;
 						cst   <= C_TA;
 					end
+					else if (ts_post && c_ack) begin
+						// posted: the buffer has it, TA now
+						ta_n  <= 1'b0;
+						beat  <= 2'd1;
+						xlast <= (siz != SIZ_LINE);
+						cst   <= C_TA;
+					end
 					else cst <= C_REQ;
 				end
 			C_REQ:
@@ -331,8 +349,9 @@ end
 // is the "req && !ack" re-accept rule of the wombat contract.
 
 // Stores to RAM and VRAM ([POST_LO, POST_HI), never a bus error) are posted
-// through wombat_store_buffer as under wombat_cpu: acknowledged the clock
-// after capture, drained in order; everything else waits for its own answer.
+// through wombat_store_buffer as under wombat_cpu: acknowledged in the
+// capture clock (s_posted: c_req drops with that ack, from C_IDLE or C_REQ
+// to C_TA), drained in order; everything else waits for its own answer.
 wombat_store_buffer #(.ENABLE(1), .POST_LO(POST_LO), .POST_HI(POST_HI)) store_buffer (
 	.clk(pclk),
 	.nreset(nrst_q),
@@ -340,7 +359,7 @@ wombat_store_buffer #(.ENABLE(1), .POST_LO(POST_LO), .POST_HI(POST_HI)) store_bu
 	.buffer_writes(1'b1),
 
 	.s_req(c_req),
-	.s_posted(1'b0),
+	.s_posted(1'b1),
 	.s_write(c_write),
 	.s_instr(c_instr),
 	.s_size(c_size),
