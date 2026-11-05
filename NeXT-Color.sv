@@ -18,12 +18,12 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 //  Clocks (structure from MacQuadra800_MiSTer, MacQuadra800.sv):
-//    clk_sys  25.000 MHz  CPU bus, devices (real Turbo bus: 33 MHz; CLK_HZ
+//    clk_sys  28.500 MHz  CPU bus, devices (real Turbo bus: 33 MHz; CLK_HZ
 //                         keeps the devices' real-time rates)
-//    clk_ram  75.000 MHz  SDRAM controller, exactly 3 x clk_sys (same PLL)
-//    clk_cpu  50.000 MHz  AP68040 core, 2 x clk_sys (same PLL; its bus runs
+//    clk_ram  85.500 MHz  SDRAM controller, exactly 3 x clk_sys (same PLL)
+//    clk_cpu  57.000 MHz  AP68040 core, 2 x clk_sys (same PLL; its bus runs
 //                         at clk_sys, rtl/next_ap68040.sv).  Sets the PLL:
-//                         ~95% full with the DSP, 57 MHz does not close.
+//                         the core's paths top out near 59 MHz.
 //    clk_vid 100.000 MHz  pixel clock, own PLL (rtl/pll_vid.v)
 //
 //  Memory (docs/DECISIONS.md):
@@ -246,7 +246,7 @@ assign LED_DISK = {1'b0, sd_busy | sd_ack_v[4]};
 
 ///////////////////////   CLOCKS   ///////////////////////////////
 
-localparam CLK_SYS_HZ = 25000000;   // rtl/pll/pll_0002.v outclk_0
+localparam CLK_SYS_HZ = 28500000;   // rtl/pll/pll_0002.v outclk_0
 
 wire clk_sys, clk_ram, clk_cpu, pll_locked;
 pll pll
