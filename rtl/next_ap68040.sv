@@ -60,6 +60,8 @@ module next_ap68040
 	parameter        SNOOP        = 2,             // 1: snoop DMA writes after the fact; 2: flush lines before DMA
 	parameter        CPU2X        = 1,             // the core on clk_cpu = 2 x clk, its bus on every other edge
 	parameter [7:0]  NOCACHE_PAGE = 8'h02,         // physical [31:24] read with TCI
+	parameter [7:0]  WT_PG_LO     = 8'h0C,         // physical [31:24] in [WT_PG_LO, WT_PG_HI): copyback
+	parameter [7:0]  WT_PG_HI     = 8'h0D,         //   cached write-through (VRAM, $0C000000)
 	parameter [31:0] POST_LO      = 32'h0400_0000, // posted stores [POST_LO, POST_HI):
 	parameter [31:0] POST_HI      = 32'h0D00_0000  //   NeXT RAM + VRAM
 )
@@ -164,8 +166,12 @@ ap68040 #(
 	.FPU_REVISION(FPU_REVISION),
 	.FPU_PIPE(FPU_PIPE), .LOOP_PRED(LOOP_PRED), .EARLY_RES(EARLY_RES),
 	// copyback (~2.9x write-through's Dhrystone: those stores run through
-	// the DMU engine one at a time); coherent through SNOOP = 2
-	.DC_WRITETHROUGH(0)
+	// the DMU engine one at a time); coherent through SNOOP = 2.  VRAM,
+	// which NeXTSTEP maps copyback (its colour frame buffer TT1), is cached
+	// write-through: a store miss writes, posted, instead of a line read
+	// and a later push of the dirty line
+	.DC_WRITETHROUGH(0),
+	.WT_PG_LO(WT_PG_LO), .WT_PG_HI(WT_PG_HI)
 ) cpu (
 	.clk(pclk), .bclk_en(bclk_en), .rsti_n(nrst_q),
 	.a_o(a_o), .a_oe(),

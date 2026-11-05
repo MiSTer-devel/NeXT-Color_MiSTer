@@ -59,7 +59,12 @@ module ap68040_dmu
 	// copyback pages (CM 01, from a TTR or a page descriptor) are cached
 	// write-through: for a system whose DMA reads are not snooped (SC 00),
 	// where memory must always be current
-	parameter bit DC_WRITETHROUGH = 0
+	parameter bit DC_WRITETHROUGH = 0,
+	// copyback pages whose physical A31-A24 is in [WT_PG_LO, WT_PG_HI) are
+	// cached write-through (a frame buffer: no line read for a store miss,
+	// no dirty line to push); empty by default
+	parameter logic [7:0] WT_PG_LO = 8'h00,
+	parameter logic [7:0] WT_PG_HI = 8'h00
 )
 (
 	input  logic        clk,
@@ -534,9 +539,10 @@ ap68040_atc #(.SAME_SEARCH(0), .EXT_SET(1)) datc (
 //--------------------------------------------------------------------------
 // translation and cache tag compare of a lookup
 //--------------------------------------------------------------------------
-// the cache mode used: DC_WRITETHROUGH takes copyback as write-through
-function automatic logic [1:0] cm_eff(input logic [1:0] cm);
-	cm_eff = (DC_WRITETHROUGH && cm == 2'b01) ? 2'b00 : cm;
+// the cache mode used: DC_WRITETHROUGH, or a physical page byte pg in
+// [WT_PG_LO, WT_PG_HI), takes copyback as write-through
+function automatic logic [1:0] cm_eff(input logic [1:0] cm, input logic [7:0] pg);
+	cm_eff = ((DC_WRITETHROUGH || (pg >= WT_PG_LO && pg < WT_PG_HI)) && cm == 2'b01) ? 2'b00 : cm;
 endfunction
 
 function automatic xres_t xlate(input logic [31:0] la, input logic s, input logic wr,
@@ -559,7 +565,7 @@ function automatic xres_t xlate(input logic [31:0] la, input logic s, input logi
 	if (tt0 || tt1) begin
 		x.ok  = 1'b1;
 		x.pa  = la;
-		x.cm  = cm_eff(tt0 ? dtt0[6:5] : dtt1[6:5]);
+		x.cm  = cm_eff(tt0 ? dtt0[6:5] : dtt1[6:5], la[31:24]);
 		x.upa = tt0 ? dtt0[9:8] : dtt1[9:8];
 		x.flt = wr && (tt0 ? dtt0[2] : dtt1[2]);
 	end
@@ -2265,7 +2271,7 @@ always_ff @(posedge clk) begin
 				e.g   = tw_pd[10];
 				e.upa = tw_pd[9:8];
 				e.s   = tw_pd[7];
-				e.cm  = cm_eff(tw_pd[6:5]);
+				e.cm  = cm_eff(tw_pd[6:5], tw_pd[31:24]);
 				e.m   = tw_pd[4];
 				e.w   = tw_wp;
 				e.r   = 1'b1;
