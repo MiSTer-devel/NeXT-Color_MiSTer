@@ -10,6 +10,7 @@ builds a frame, stores callp at -12(a6), then
 raises level-4 interrupts at random; a JSR that lands in the table
 (callp + 4) is the bug.
 """
+import os
 import sys
 
 BASE = 0x04000000
@@ -23,6 +24,16 @@ ROOT = 0x04044000       # root table; the pointer table follows
 PTR = 0x04044200
 UTH = 0x04014008       # the 'uthread' a store goes to before the dispatch
 NF = 8
+# COPYTEST=1: each trip also runs a self-checking copy (no-allocate store
+# misses, stores done at the BIU's gnt): fill SRC, copy longs to DST and
+# misaligned bytes to DST2, compare, and a store/load on one line; a
+# mismatch writes the bench's FAIL mailbox
+COPY = os.environ.get('COPYTEST', '0') == '1'
+CLONGS = int(os.environ.get('COPYLONGS', '256'))   # longs per copy (4096: 16 KB, past the 4 KB cache)
+SRC = 0x04050000
+DST = 0x04060000
+DST2 = 0x04064000
+DST3 = 0x04068000
 
 mem = bytearray(0x50000)
 labels, fix = {}, []
@@ -115,6 +126,8 @@ w(0xE788)                                               # lsl.l #3,d0
 movea_imm_a(TABLE, 1)
 w(0x2387, 0x0000)                                       # move.l d7,(0,a1,d0.w) -- nargs field
 movel_d_abs(7, MBOX)                                    # progress
+if COPY:
+    fix.append(('rel', pc + 2, 'copytest')); w(0x6100, 0)   # bsr.w copytest
 if MMU:
     # every 4th trip: drop the ATCs (a context switch), so the walks run
     w(0x2007)                                           # move.l d7,d0
@@ -184,6 +197,54 @@ movel_d_abs(0, MBOX + 0x1C)                             # a device write
 movel_imm_abs(1, MBOX + 4)                              # ack: the bench drops IPL
 w(0x201F)                                               # move.l (sp)+,d0
 w(0x4E73)
+
+if COPY:
+    lab('copytest')
+    # timing marks (MBOX+$10 = phase that starts): 1 fill, 2 copy, 3 bytes, 4 compare, 5 out
+    movel_imm_abs(1, MBOX + 0x10)
+    # fill SRC: CLONGS longs, d7 + index
+    movea_imm_a(SRC, 0); movel_imm_d(CLONGS - 1, 1)
+    lab('ct_fill')
+    w(0x2007)                                           # move.l d7,d0
+    w(0xD081)                                           # add.l d1,d0
+    w(0xE198)                                           # rol.l #8,d0
+    w(0x20C0)                                           # move.l d0,(a0)+
+    bra16(0x51C9, 'ct_fill')                            # dbra d1
+    movel_imm_abs(2, MBOX + 0x10)
+    # copy longs SRC -> DST
+    movea_imm_a(SRC, 0); movea_imm_a(DST, 1); movel_imm_d(CLONGS - 1, 1)
+    lab('ct_cpl')
+    w(0x22D8)                                           # move.l (a0)+,(a1)+
+    bra16(0x51C9, 'ct_cpl')
+    movel_imm_abs(3, MBOX + 0x10)
+    # copy bytes SRC+1 -> DST2+3 (misaligned, across lines)
+    movea_imm_a(SRC + 1, 0); movea_imm_a(DST2 + 3, 1); movel_imm_d(60, 1)
+    lab('ct_cpb')
+    w(0x12D8)                                           # move.b (a0)+,(a1)+
+    bra16(0x51C9, 'ct_cpb')
+    movel_imm_abs(4, MBOX + 0x10)
+    # compare longs
+    movea_imm_a(SRC, 0); movea_imm_a(DST, 1); movel_imm_d(CLONGS - 1, 1)
+    lab('ct_vl')
+    w(0xB388)                                           # cmpm.l (a0)+,(a1)+
+    bra16(0x56C9, 'ct_vl')                              # dbne d1
+    bra16(0x6600, 'ct_fail')                            # bne.w
+    # compare bytes
+    movea_imm_a(SRC + 1, 0); movea_imm_a(DST2 + 3, 1); movel_imm_d(60, 1)
+    lab('ct_vb')
+    w(0xB308)                                           # cmpm.b (a0)+,(a1)+
+    bra16(0x56C9, 'ct_vb')
+    bra16(0x6600, 'ct_fail')
+    # a store and a load of the same line straight after (no allocate)
+    movel_d_abs(7, DST3 + 4)
+    movel_abs_d(DST3 + 4, 0)
+    w(0xB087)                                           # cmp.l d7,d0
+    bra16(0x6600, 'ct_fail')
+    movel_imm_abs(5, MBOX + 0x10)
+    w(0x4E75)                                           # rts
+    lab('ct_fail')
+    movel_imm_abs(0x0BADC0C0, MBOX + 8)
+    w(0x60FE)
 
 lab('ill_h')
 movel_imm_abs(0x0BAD0004, MBOX + 8)

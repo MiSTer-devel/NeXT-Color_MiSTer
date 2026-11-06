@@ -12,6 +12,8 @@
 //   +flush=N        a flush every ~N clocks (0: none; default 40)
 //   +irq=N          a level-4 interrupt every ~N clocks (0: none; default 300)
 //   +lat=N          RAM latency 1..N clocks (default 3)
+//   +cpfl=1         a third of the flushes in the copy test's buffers
+//                   (mkprog.py with COPYTEST=1)
 `timescale 1ns/1ps
 module tb_fl;
 
@@ -61,6 +63,11 @@ task automatic wr32(input [31:0] a, input [31:0] d);
 endtask
 
 int unsigned bcnt = 0;
+// COPYTEST timing marks: clocks per phase (1 fill, 2 copy longs, 3 copy bytes, 4 compare)
+longint unsigned mk_t [1:4] = '{0, 0, 0, 0};
+int unsigned     mk_n [1:4] = '{0, 0, 0, 0};
+int unsigned     mk_c = 0;
+reg [2:0]        mk_ph = 0;
 reg          bbusy = 0;
 int unsigned n_irq = 0, n_fl = 0, n_fld = 0, n_dma = 0, n_trap = 0;
 
@@ -80,6 +87,14 @@ always @(posedge clk) begin
 				if (bus_addr[31:24] == 8'h02) begin
 					if (bus_addr[3:0] == 4'h0) n_trap <= bus_wdata;
 					if (bus_addr[3:0] == 4'h4) ipl <= 3'b111;      // the handler's ack
+					if (bus_addr[7:0] == 8'h10) begin            // COPYTEST timing mark
+						if (mk_ph >= 1 && mk_ph <= 4) begin
+							mk_t[mk_ph] = mk_t[mk_ph] + (cyc - mk_c);
+							mk_n[mk_ph] = mk_n[mk_ph] + 1;
+						end
+						mk_ph = bus_wdata[2:0];
+						mk_c  = cyc;
+					end
 					if (bus_addr[3:0] == 4'h8) begin
 						$display("FAIL cyc %0d: exception handler %08h, stacked PC %08h", cyc, bus_wdata,
 						         rd32(32'h0407F000 - 32'd0));
@@ -110,10 +125,16 @@ reg  [31:4]  fl_cur;
 reg          dma_pend = 0;
 // lines flushed: the table, the functions' data, the stack, the code,
 // a DMA buffer
+int unsigned cp_fl = 0;        // +cpfl=1: a third of the flushes in COPYTEST's buffers
+initial void'($value$plusargs("cpfl=%d", cp_fl));
 function automatic [31:4] pick_line();
 	int unsigned r;
 	r = $urandom % 11;
+	if (cp_fl != 0 && ($urandom % 3) == 0)
+		r = 11 + ($urandom % 2);
 	case (r)
+		11: pick_line = 28'h0405000 + ($urandom % 64);          // COPYTEST's SRC
+		12: pick_line = 28'h0406000 + ($urandom % 64);          // COPYTEST's DST
 		0: pick_line = 28'h0401000 + ($urandom % 4);           // table
 		1: pick_line = 28'h0401800 + ($urandom % 8);           // functions' data
 		2: pick_line = 28'h0401810;                            // the IRQ's data
@@ -262,6 +283,9 @@ always @(posedge clk) if (nreset) begin
 	if (cyc >= cycles) begin
 		$display("PASS cycles %0d traps %0d flushes %0d dirty %0d dma %0d irqs %0d",
 		         cyc, n_trap, n_fl, n_fld, n_dma, n_irq);
+		for (int k = 1; k <= 4; k++)
+			if (mk_n[k] != 0)
+				$display("COPYTIME phase %0d n=%0d avg=%0d clocks", k, mk_n[k], mk_t[k] / mk_n[k]);
 		$finish;
 	end
 end
