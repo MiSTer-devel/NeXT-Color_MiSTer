@@ -63,7 +63,7 @@ module next_ap68040
 	parameter [7:0]  WT_PG_LO     = 8'h0C,         // physical [31:24] in [WT_PG_LO, WT_PG_HI): copyback
 	parameter [7:0]  WT_PG_HI     = 8'h0D,         //   cached write-through (VRAM, $0C000000)
 	parameter [7:0]  NA_PG_LO     = 8'h04,         // physical [31:24] in [NA_PG_LO, NA_PG_HI): a copyback
-	parameter [7:0]  NA_PG_HI     = 8'h08,         //   store miss is not allocated (RAM, $04-$07)
+	parameter [7:0]  NA_PG_HI     = 8'h0C,         //   store miss is not allocated (RAM, $04-$0B)
 	parameter [31:0] POST_LO      = 32'h0400_0000, // posted stores [POST_LO, POST_HI):
 	parameter [31:0] POST_HI      = 32'h0D00_0000  //   NeXT RAM + VRAM
 )
