@@ -57,6 +57,8 @@ module next_ap68040
 	parameter        FPU_PIPE     = 0,             // AP68040 area options
 	parameter        LOOP_PRED    = 0,
 	parameter        EARLY_RES    = 0,
+	parameter        DC1_ATC      = 1,             // AP68040 timing options (66 MHz clk_cpu): DC1's own
+	parameter        SKID         = 1,             //   ATC port and tag compare, AG's skid register
 	parameter        SNOOP        = 2,             // 1: snoop DMA writes after the fact; 2: flush lines before DMA
 	parameter        CPU2X        = 1,             // the core on clk_cpu = 2 x clk, its bus on every other edge
 	parameter [7:0]  NOCACHE_PAGE = 8'h02,         // physical [31:24] read with TCI
@@ -167,6 +169,7 @@ reg         alt_ln;
 ap68040 #(
 	.FPU_REVISION(FPU_REVISION),
 	.FPU_PIPE(FPU_PIPE), .LOOP_PRED(LOOP_PRED), .EARLY_RES(EARLY_RES),
+	.DC1_ATC(DC1_ATC), .SKID(SKID),
 	// copyback (~2.9x write-through's Dhrystone: those stores run through
 	// the DMU engine one at a time); coherent through SNOOP = 2.  VRAM,
 	// which NeXTSTEP maps copyback (its colour frame buffer TT1), is cached
