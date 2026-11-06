@@ -964,6 +964,14 @@ wire ex_st    = m3.r.v && (m3.r.mem != M_LD);
 wire dc2_slow = m2.r.v && !fast_now && !fast_wait && !(st_simple && !e_job) && !e_dc2_done && !e_job &&
                 !ex_st;
 wire wb_slow  = wb_st && !wb_fast && !wb_fs && !wfs_p1 && !e_wst_done;
+// a WB store the engine sends straight to the bus from E_IDLE: one aligned
+// piece to a posted page (PS_PG), not locked, not MOVE16, no IACK, and not
+// a cache-inhibited hit (that pushes and invalidates first)
+wire wb_post = !m4.split && !m4.r.lock && (m4.r.msz != SZ_Q) && (m4.r.ack == 2'd0) &&
+               m4.x.ok && !m4.x.flt && ps_pg(m4.x.pa[31:24]) &&
+               !(m4.x.hit && dc_en && m4.x.cm[1]) &&
+               ((m4.r.msz == SZ_B) || (m4.r.msz == SZ_W && !m4.r.a[0]) ||
+                (m4.r.msz == SZ_L && m4.r.a[1:0] == 2'd0));
 
 // store ready: the fast store answers in its own WB cycle (the engine's
 // stores through the registered pulse)
@@ -1009,7 +1017,9 @@ end
 // engine busy for the next)
 assign dm_hold1 = sn_frz || steal || steal_q || (m1.v && m1_stale) ||
                   (e_st != E_IDLE && e_st != E_W_START &&
-                   e_st != E_W_PART && e_st != E_W_DONE);
+                   e_st != E_W_PART && e_st != E_W_DONE &&
+                   // (a WB store's own bus write uses no lookup port)
+                   !((e_st == E_BUS || e_st == E_BUS_W) && e_ret == E_W_DONE && !bo.rd && !bo.line));
 
 // the table walk's descriptor line in the cache: the hit and its way, from
 // the tags and valid bits read at the walk's set (tw_busy: the valid copy
@@ -1265,6 +1275,50 @@ always_ff @(posedge clk) begin
 				;                       // a split WB store's second part next
 			else if (mt_v && !mt_done)
 				e_st <= E_M_START;
+			else if (wb_slow && wb_post && !bo_cancel) begin
+				// E_W_START, E_W_PART and E_BUS in one: the store's bus write
+				logic upd;
+				upd = m4.x.hit && dc_en;
+				e_part <= 1'b0;
+				e_acc  <= lalign(st_data, m4.r.msz);
+				e_va   <= m4.r.a;
+				e_x    <= m4.x;
+				e_n    <= nbytes(m4.r.msz);
+				if (upd) begin
+					// a write-through hit (a copyback hit is the WB fast store)
+					dw      <= 1'b1;
+					dw_set  <= m4.r.a[9:4];
+					dw_way  <= m4.x.way;
+					dw_be   <= bmask(m4.r.a[3:0], nbytes(m4.r.msz));
+					dw_src  <= 2'd0;
+					dw_word <= lanes32(lalign(st_data, m4.r.msz), m4.r.a[1:0]);
+					if (m4.x.cm == 2'b01) begin
+						vp_set = m4.r.a[9:4]; vp_wm[m4.x.way] = 1'b1; vp_dwe = 1'b1; vp_dv = 1'b1;
+					end
+				end
+				bo.line  <= 1'b0;
+				bo.rd    <= 1'b0;
+				bo.tt    <= fc_tt(m4.r.fc);
+				bo.tm    <= fc_tm(m4.r.fc);
+				bo.upa   <= m4.x.upa;
+				bo.ci    <= m4.x.cm[1];
+				bo.lock  <= 1'b0;
+				bo.locke <= 1'b0;
+				bo.ack   <= 2'd0;
+				bo.tln   <= 2'd0;
+				bo_pa    <= m4.x.pa;
+				bo_left  <= nbytes(m4.r.msz);
+				bo_wd    <= lalign(st_data, m4.r.msz);
+				bo_err   <= 1'b0;
+				bo_got   <= 4'd0;
+				bo_tci   <= 1'b0;
+				bo_avec  <= 1'b0;
+				bo_rd    <= '0;
+				bo_ingnt <= 1'b0;
+				e_breq   <= 1'b1;
+				e_ret    <= E_W_DONE;
+				e_st     <= E_BUS_W;
+			end
 			else if (wb_slow)
 				e_st <= E_W_START;
 			else if ((dc2_slow || (e_job && m2.r.v && !e_dc2_done)) && !kill_now) begin
@@ -2042,7 +2096,14 @@ always_ff @(posedge clk) begin
 					// the store is done (its done is swallowed by bo_post)
 					bo_ingnt <= 1'b0;
 					bo_post  <= 1'b1;
-					e_st     <= e_ret;
+					if ((!m4.split || e_part) && !pbe_r) begin
+						// E_W_DONE's normal end, here
+						st_rdy_r   <= 1'b1;
+						st_fault_r <= 1'b0;
+						e_wst_done <= 1'b1;
+						e_st       <= E_IDLE;
+					end
+					else e_st <= e_ret;
 				end
 			end
 			// (granted, then retried with the bus given up: the BIU drops

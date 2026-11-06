@@ -211,6 +211,21 @@ always @(posedge clk_cpu) begin
 	end
 end
 
+// ---- +trst=N: N core clocks of DMU/BIU state from the first copy-phase-1 mark
+int unsigned trst = 0, trc = 0;
+reg          tron = 0;
+initial void'($value$plusargs("trst=%d", trst));
+always @(posedge clk_cpu) begin
+	if (trst != 0 && !tron && mk_ph == 3'd1 && mk_n[1] >= 2) tron <= 1'b1;
+	if (tron && trc < trst) begin
+		trc <= trc + 1;
+		$display("TR %0d e_st=%0d wb_slow=%b st_rdy=%b adv_wb=%b breq=%b gnt=%b done=%b biu_st=%0d ts=%b ta=%b bo_post=%b",
+		         trc, dut.cpu.dmu.e_st, dut.cpu.dmu.wb_slow, dut.cpu.dmu.st_rdy, dut.cpu.dmu.adv_wb,
+		         dut.cpu.dmu.e_breq, dut.cpu.dmu.b_gnt, dut.cpu.dmu.b_done, dut.cpu.biu.st, dut.cpu.ts_n, dut.ta_n,
+		         dut.cpu.dmu.bo_post);
+	end
+end
+
 // ---- level-4 interrupts
 int unsigned irq_next = 5000;
 always @(posedge clk)
