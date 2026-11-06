@@ -62,6 +62,8 @@ module next_ap68040
 	parameter [7:0]  NOCACHE_PAGE = 8'h02,         // physical [31:24] read with TCI
 	parameter [7:0]  WT_PG_LO     = 8'h0C,         // physical [31:24] in [WT_PG_LO, WT_PG_HI): copyback
 	parameter [7:0]  WT_PG_HI     = 8'h0D,         //   cached write-through (VRAM, $0C000000)
+	parameter [7:0]  NA_PG_LO     = 8'h04,         // physical [31:24] in [NA_PG_LO, NA_PG_HI): a copyback
+	parameter [7:0]  NA_PG_HI     = 8'h08,         //   store miss is not allocated (RAM, $04-$07)
 	parameter [31:0] POST_LO      = 32'h0400_0000, // posted stores [POST_LO, POST_HI):
 	parameter [31:0] POST_HI      = 32'h0D00_0000  //   NeXT RAM + VRAM
 )
@@ -171,7 +173,13 @@ ap68040 #(
 	// write-through: a store miss writes, posted, instead of a line read
 	// and a later push of the dirty line
 	.DC_WRITETHROUGH(0),
-	.WT_PG_LO(WT_PG_LO), .WT_PG_HI(WT_PG_HI)
+	.WT_PG_LO(WT_PG_LO), .WT_PG_HI(WT_PG_HI),
+	// RAM store misses are written to memory, not allocated (no line read
+	// for a copy's destination, no dirty line to push); stores to the
+	// posted window are done once the BIU has them (wombat_store_buffer
+	// takes them and they never end in a bus error)
+	.NA_PG_LO(NA_PG_LO), .NA_PG_HI(NA_PG_HI),
+	.PS_PG_LO(POST_LO[31:24]), .PS_PG_HI(POST_HI[31:24])
 ) cpu (
 	.clk(pclk), .bclk_en(bclk_en), .rsti_n(nrst_q),
 	.a_o(a_o), .a_oe(),

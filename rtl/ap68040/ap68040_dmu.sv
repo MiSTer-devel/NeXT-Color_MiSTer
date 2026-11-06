@@ -64,7 +64,19 @@ module ap68040_dmu
 	// cached write-through (a frame buffer: no line read for a store miss,
 	// no dirty line to push); empty by default
 	parameter logic [7:0] WT_PG_LO = 8'h00,
-	parameter logic [7:0] WT_PG_HI = 8'h00
+	parameter logic [7:0] WT_PG_HI = 8'h00,
+	// a copyback store that misses a line whose physical A31-A24 is in
+	// [NA_PG_LO, NA_PG_HI) does not allocate it: it is written to memory
+	// (posted) as a write-through store would be (copy loops: no line read
+	// for the destination, no dirty line to push later); empty by default
+	parameter logic [7:0] NA_PG_LO = 8'h00,
+	parameter logic [7:0] NA_PG_HI = 8'h00,
+	// a single-piece store at WB to physical A31-A24 in [PS_PG_LO, PS_PG_HI),
+	// which the system posts and never ends in a bus error, is finished when
+	// the BIU takes it (gnt), not at its TA: the engine and WB go on while
+	// the transfer runs; empty by default
+	parameter logic [7:0] PS_PG_LO = 8'h00,
+	parameter logic [7:0] PS_PG_HI = 8'h00
 )
 (
 	input  logic        clk,
@@ -358,6 +370,10 @@ logic        sn_pvm, sn_bom;       // ... and (whatever sn_src says) the push bu
 logic  [1:0] sn_way;
 logic        bo_cancel;            // the queued push was invalidated by a snoop
 logic        bo_ingnt;             // the engine's transfer is the BIU's (granted)
+logic        bo_post;              // a store finished at its gnt (PS_PG): its done/err still to come
+// the engine's own transfer's done/err (not a posted store's, still running)
+wire         b_done_e = b_done && !bo_post;
+wire         b_err_e  = b_err  && !bo_post;
 logic  [3:0] bo_got;               // a line read: the long words that arrived
 
 // The lookup set: AG's address (late: register read, address adders)
@@ -539,6 +555,13 @@ ap68040_atc #(.SAME_SEARCH(0), .EXT_SET(1)) datc (
 //--------------------------------------------------------------------------
 // translation and cache tag compare of a lookup
 //--------------------------------------------------------------------------
+function automatic logic na_pg(input logic [7:0] pg);
+	na_pg = (pg >= NA_PG_LO) && (pg < NA_PG_HI);
+endfunction
+function automatic logic ps_pg(input logic [7:0] pg);
+	ps_pg = (pg >= PS_PG_LO) && (pg < PS_PG_HI);
+endfunction
+
 // the cache mode used: DC_WRITETHROUGH, or a physical page byte pg in
 // [WT_PG_LO, WT_PG_HI), takes copyback as write-through
 function automatic logic [1:0] cm_eff(input logic [1:0] cm, input logic [7:0] pg);
@@ -740,7 +763,8 @@ wire [31:0] fast_data = take({dq2, 64'd0}, {2'd0, m2.r.a[1:0]}, nbytes(m2.r.msz)
 // allocate (copyback miss), is split, or is a MOVE16 destination
 wire st_simple = m2.r.v && (m2.r.mem == M_ST) && m2.x.ok && !m2.x.flt && !m2.split &&
                  (m2.r.msz != SZ_Q) &&
-                 !(dc_en && m2.x.cm == 2'b01 && !m2.x.hit && !m2.r.noalloc && !m2.r.lock);
+                 !(dc_en && m2.x.cm == 2'b01 && !m2.x.hit && !m2.r.noalloc && !m2.r.lock &&
+                   !na_pg(m2.x.pa[31:24]));
 
 //--------------------------------------------------------------------------
 // engine
@@ -1083,7 +1107,7 @@ always_ff @(posedge clk) begin
 		e_job <= 1'b0;
 		m1_stale <= 1'b0;
 		sn_ph <= SN_IDLE; sn_src <= '0; sn_way <= '0; bo_cancel <= 1'b0;
-		bo_ingnt <= 1'b0; sn_pvm <= 1'b0; sn_bom <= 1'b0;
+		bo_ingnt <= 1'b0; bo_post <= 1'b0; sn_pvm <= 1'b0; sn_bom <= 1'b0;
 		sn_look <= 1'b0; sn_hit <= 1'b0; sn_dirty <= 1'b0;
 		clr_i   <= '0;
 		clr_rst <= 1'b0;
@@ -1218,6 +1242,10 @@ always_ff @(posedge clk) begin
 		tw_hwq <= tw_hw_w;
 		tw_hvq <= tw_busy && !sn_frz && (f_set == tw_da[9:4]);
 		if (tw_busy) f_set <= tw_da[9:4];   // (lv_ra: the walk's set)
+
+		// the done (or error: none in a posted page) of a store finished at
+		// its gnt: the BIU's next transfer for the engine follows it
+		if (bo_post && (b_done || b_err)) bo_post <= 1'b0;
 
 		//--------------------------------------------------------------
 		// engine (frozen while the snooper has the cache)
@@ -1445,8 +1473,9 @@ always_ff @(posedge clk) begin
 				e_st <= E_S_NEXT;
 			end
 			else if (m2.r.mem == M_ST) begin
-				// a store: a copyback miss allocates the line for WB
-				if (alloc && e_x.cm == 2'b01 && !e_x.hit) begin
+				// a store: a copyback miss allocates the line for WB (not
+				// in an NA_PG page: WB writes it to memory instead)
+				if (alloc && e_x.cm == 2'b01 && !e_x.hit && !na_pg(e_x.pa[31:24])) begin
 					f_set  <= e_va[9:4];
 					f_tag  <= e_x.pa[31:10];
 					f_way  <= victim(lve_q, rrc);
@@ -2007,10 +2036,18 @@ always_ff @(posedge clk) begin
 				e_breq <= 1'b0;
 				bo_pn  <= bo_np;
 				bo_ingnt <= 1'b1;
+				if (e_ret == E_W_DONE && !bo.rd && !bo.line && bo.ack == 2'd0 && !bo.lock &&
+				    bo_left == bo_np && ps_pg(bo_pa[31:24])) begin
+					// a posted store, its last piece: the BIU has latched it,
+					// the store is done (its done is swallowed by bo_post)
+					bo_ingnt <= 1'b0;
+					bo_post  <= 1'b1;
+					e_st     <= e_ret;
+				end
 			end
 			// (granted, then retried with the bus given up: the BIU drops
 			// it on bi_drop and reports it done)
-			if (b_err || b_done) begin
+			if (b_err_e || b_done_e) begin
 				bo_ingnt  <= 1'b0;
 				bo_cancel <= 1'b0;
 			end
@@ -2025,7 +2062,7 @@ always_ff @(posedge clk) begin
 					bo_avec <= b_ravec;
 				end
 			end
-			if (b_err) begin
+			if (b_err_e) begin
 				// a push that ends in TEA: recorded for the access error the
 				// job it served takes (7.6.1); the line is gone.  A walk's
 				// (a descriptor line pushed before its update) fails the
@@ -2037,7 +2074,7 @@ always_ff @(posedge clk) begin
 				else bo_err <= 1'b1;
 				e_st   <= e_ret;
 			end
-			else if (b_done) begin
+			else if (b_done_e) begin
 				if (bo.line || bo.ack != 2'd0) e_st <= e_ret;
 				else begin
 					if (!bo.rd) bo_wd <= bo_wd << (8 * bo_pn);

@@ -34,8 +34,8 @@
 //                                                                          //
 // Requester interface (per client c):                                      //
 //   req[c]      level; breq[c] must be stable while req[c] is high and    //
-//               gnt[c] has not pulsed; wdata[c] from the request until    //
-//               done[c] or err[c] (the BIU drives the bus from it)         //
+//               gnt[c] has not pulsed; so must wdata[c] (the BIU latches   //
+//               it with the request and drives the bus from its copy)      //
 //   gnt[c]      pulse: the transaction is latched, req may drop or change  //
 //   rvalid      pulse per read beat for the client in rclient; rdata,      //
 //               rbeat (A3:A2 of the long word), avec (AVEC with TA)        //
@@ -131,7 +131,8 @@ typedef enum logic [2:0] {
 state_t      st;
 busreq_t     cur;
 logic [CW-1:0] cur_c;
-wire  [127:0] cur_wd = wdata[cur_c];   // stable until done/err (contract)
+logic [127:0] cur_wd;     // the transfer's write data, latched at its start: a
+                          // requester may move on once it has its gnt
 logic  [1:0] beat;        // beats completed so far in a line
 logic        inhibited;   // line continued as long-word transfers
 logic        owner;       // we hold BB
@@ -398,6 +399,7 @@ always_ff @(posedge clk) begin
 				logic [127:0] w;
 				r = (st == S_RETRY) ? cur : breq[pick_c];
 				w = (st == S_RETRY) ? cur_wd : wdata[pick_c];
+				cur_wd    <= w;
 				owner     <= 1'b1;
 				bb_n_o    <= 1'b0;
 				bb_oe     <= 1'b1;

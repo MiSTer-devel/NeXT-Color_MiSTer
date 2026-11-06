@@ -25,7 +25,11 @@ module ap68040
 	// system options
 	parameter bit         DC_WRITETHROUGH = 0,   // copyback pages cached write-through (DMA reads not snooped)
 	parameter logic [7:0] WT_PG_LO     = 8'h00,  // copyback pages at physical A31-A24 in [LO, HI)
-	parameter logic [7:0] WT_PG_HI     = 8'h00   //   cached write-through (a frame buffer)
+	parameter logic [7:0] WT_PG_HI     = 8'h00,  //   cached write-through (a frame buffer)
+	parameter logic [7:0] NA_PG_LO     = 8'h00,  // copyback store misses at physical A31-A24 in
+	parameter logic [7:0] NA_PG_HI     = 8'h00,  //   [LO, HI) not allocated (written to memory)
+	parameter logic [7:0] PS_PG_LO     = 8'h00,  // stores at physical A31-A24 in [LO, HI) that the
+	parameter logic [7:0] PS_PG_HI     = 8'h00   //   system posts: done at the BIU's gnt
 )(
 
 	input  logic        clk,
@@ -288,7 +292,9 @@ ap68040_backend #(.FPU_REVISION(FPU_REVISION), .FPU_PIPE(FPU_PIPE), .EARLY_RES(E
 );
 
 ap68040_dmu #(.DC1_ATC(DC1_ATC), .DC_WRITETHROUGH(DC_WRITETHROUGH),
-              .WT_PG_LO(WT_PG_LO), .WT_PG_HI(WT_PG_HI)) dmu (
+              .WT_PG_LO(WT_PG_LO), .WT_PG_HI(WT_PG_HI),
+              .NA_PG_LO(NA_PG_LO), .NA_PG_HI(NA_PG_HI),
+              .PS_PG_LO(PS_PG_LO), .PS_PG_HI(PS_PG_HI)) dmu (
 	.clk(clk), .nreset(nreset),
 	.adv_ag(adv_ag), .dm_req(dm_req), .dm_va(dm_va), .dm_mem(dm_mem),
 	.dm_msz(dm_msz), .dm_fc(dm_fc), .dm_lock(dm_lock), .dm_locke(dm_locke),
