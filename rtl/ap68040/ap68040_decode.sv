@@ -44,6 +44,7 @@ module ap68040_decode
 	input  pd_t         pd0,
 	input  pd_t         pd0_n,         // pd0 next cycle (the attribute ROM's address)
 	input  logic  [3:0] qcnt,
+	input  logic [15:0] qge,           // qge[k]: qcnt >= k (fetch's register)
 	input  logic [31:0] qpc,
 	input  logic        q_odd,
 	input  logic        smode,
@@ -303,8 +304,7 @@ logic [31:0] f_addr;
 // faulted one, and it takes the fault.  Waiting for the rest would wait
 // forever -- an opword fault at an address with A1 set queues ONE word,
 // shorter than the two-word instruction its zero word decodes as.
-wire   [8:0] q_mask = (9'd1 << qcnt) - 9'd1;
-wire         q_flt  = |(win_flt & q_mask[7:0]);
+wire         q_flt  = |(win_flt & qge[8:1]);   // (qge[k+1]: word k is queued)
 always_comb begin
 	logic [2:0] fi;
 	fi = 3'd0;
@@ -479,8 +479,8 @@ always_comb begin
 		il = (ph == PH_EA0) ? part_imml : 3'd0;
 		l  = ea_len(i, win[0], il);
 		nrec = part;
-		if ({1'b0, l} <= qcnt || q_flt) begin
-			use_n = ({1'b0, l} <= qcnt) ? {1'b0, l} : qcnt;   // (q_flt: what is queued)
+		if (qge[l] || q_flt) begin
+			use_n = qge[l] ? {1'b0, l} : qcnt;   // (q_flt: what is queued)
 			flt   = |(win_flt & ((8'd1 << l) - 8'd1));
 			begin
 				// (one instance for both phases: the same words and base)
@@ -512,7 +512,7 @@ always_comb begin
 			end
 		end
 	end
-	else if (q_odd && qcnt == 4'd0) begin
+	else if (q_odd && !qge[1]) begin
 		// the stream starts at an odd address: address error
 		go       = 1'b1;
 		nrec.pc  = qpc;
@@ -520,7 +520,7 @@ always_comb begin
 		nrec.exc = 8'd3;
 		nrec.rt  = UA_DEC_EXC;
 	end
-	else if (qcnt != 4'd0) begin
+	else if (qge[1]) begin
 		logic [2:0] pi, nimm;
 		nrec.pc    = qpc;
 		nrec.opw   = opw;
@@ -551,9 +551,9 @@ always_comb begin
 			           (opw[15:12] == 4'hF) ? 8'd11 : 8'd4;
 		end
 		else if (fast) begin
-			if (pd0.tot <= qcnt || q_flt) begin
+			if (qge[pd0.tot] || q_flt) begin
 				go    = 1'b1;
-				use_n = (pd0.tot <= qcnt) ? pd0.tot : qcnt;
+				use_n = qge[pd0.tot] ? pd0.tot : qcnt;
 				flt   = |(win_flt & ((9'd1 << pd0.tot) - 9'd1));
 				nrec.ea0 = mk_ea(pd0.i0, opw[2:0], {1'b0, fb},
 				                 (pd0.sz == SZ_L) ? 3'd2 : 3'd1,
@@ -566,14 +566,14 @@ always_comb begin
 				                 win[fp1], win[3'(fp1 + 1)], 16'd0, 16'd0, 16'd0);
 			end
 		end
-		else if ({1'b0, pd0.b} <= qcnt || q_flt) begin
+		else if (qge[pd0.b] || q_flt) begin
 			// slow path, first phase: operation word, fixed words, immediate;
 			// the EAs without extension words are complete already
 			nrec.ea0 = mk_ea(pd0.i0, opw[2:0], 4'd0, 3'd0, 32'd0,
 			                 16'd0, 16'd0, 16'd0, 16'd0, 16'd0);
 			nrec.ea1 = mk_ea(pd0.i1, opw[11:9], 4'd0, 3'd0, 32'd0,
 			                 16'd0, 16'd0, 16'd0, 16'd0, 16'd0);
-			use_n = ({1'b0, pd0.b} <= qcnt) ? {1'b0, pd0.b} : qcnt;
+			use_n = qge[pd0.b] ? {1'b0, pd0.b} : qcnt;
 			flt   = |(win_flt & ((8'd1 << pd0.b) - 8'd1));
 			if (flt) begin
 				go = 1'b1;                   // stop at the faulted part

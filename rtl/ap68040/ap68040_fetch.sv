@@ -81,6 +81,7 @@ module ap68040_fetch
 	output pd_t         pd0,          // predecode of win[0]
 	output pd_t         pd0_n,        // ... as it will be next cycle
 	output logic  [3:0] qcnt,         // words available in win (0..8)
+	output logic [15:0] qge,          // qge[k]: qcnt >= k, registered (timing)
 	output logic [31:0] qpc,
 	input  logic  [2:0] consume,
 	output logic        q_odd,        // the stream starts at an odd address
@@ -168,6 +169,14 @@ logic [31:0]   qpc_r;
 logic          odd;
 
 assign qcnt  = (cnt > 5'd8) ? 4'd8 : cnt[3:0];
+// qcnt as a thermometer, kept in step with cnt in its own register so D1's
+// "are the instruction's words here" tests are a select, not a compare
+// against a count formed from cnt
+logic [8:1] qge_r;
+assign qge = {7'd0, qge_r, 1'b1};
+function automatic logic [8:1] q_therm(input logic [5:0] n);
+	for (int k = 1; k <= 8; k++) q_therm[k] = (n >= 6'(k));
+endfunction
 assign qpc   = qpc_r;
 assign q_odd = odd;
 assign pd0   = qp0;
@@ -497,6 +506,7 @@ always_ff @(posedge clk) begin
 	iw_set = '0; iw_m = '0; iw_v = 1'b0;
 	if (!nreset) begin
 		cnt   <= '0;
+		qge_r <= '0;
 		qf    <= '0; qd <= '0; qa <= '0;
 		qpc_r <= '0;
 		odd   <= 1'b0;
@@ -572,6 +582,14 @@ always_ff @(posedge clk) begin
 			end
 		end
 		cnt   <= keep + {3'b000, f3_n};
+		// (one candidate per consume value, from registers only; the late
+		// consume picks one)
+		begin
+			logic [8:1] qt [8];
+			for (int c = 0; c < 8; c++)
+				qt[c] = q_therm(6'(cnt) - 6'(c) + {4'd0, f3_n});
+			qge_r <= qt[consume];
+		end
 		// the predecode ring: appended at head + count (wherever D1's
 		// consume puts the head), the head moved by consume
 		begin
@@ -878,6 +896,7 @@ always_ff @(posedge clk) begin
 		//------------------------------------------------------------------
 		if (redir_any) begin
 			cnt   <= '0;
+			qge_r <= '0;
 			f2_n  <= '0;
 			f3_n  <= '0;
 			f2_b  <= '0;
@@ -998,6 +1017,11 @@ always_ff @(posedge clk)
 // synthesis translate_on
 
 // synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && qge_r != q_therm({1'b0, cnt})) begin
+		$display("FAIL: fetch: qge %b, cnt %0d", qge_r, cnt);
+		$finish;
+	end
 always_ff @(posedge clk)
 	if (nreset && cnt != 5'd0 && qp0 != qps[0]) begin
 		$display("FAIL: fetch: the predecode ring's head %h, the queue's %h", qp0, qps[0]);
