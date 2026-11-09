@@ -739,13 +739,24 @@ wire hz = st_line(m3, m2_line) || st_line(m4, m2_line);
 // the fast load (never split) waits only for a store whose bytes it reads:
 // a plain store within one line is compared by bytes, anything else (RMW,
 // split, MOVE16) by the line
-wire [15:0] m2_bm = bmask(m2.r.a[3:0], nbytes(m2.r.msz));
-function automatic logic st_byte(input mrec_t m);
+// (each record's byte mask registered as it moves in -- bm2..bm4: the
+// shifts from the address stay off DC2's ready and the stall chain; a
+// record's x.pa[3:0] is its r.a[3:0], the page offset)
+logic [15:0] bm2, bm3, bm4;
+wire [15:0] m2_bm = bm2;
+function automatic logic st_byte(input mrec_t m, input logic [15:0] bm);
 	st_byte = st_line(m, m2_line) &&
 	          (m.r.mem == M_RMW || m.split || m.r.msz == SZ_Q ||
-	           (bmask(m.x.pa[3:0], nbytes(m.r.msz)) & m2_bm) != 16'd0);
+	           (bm & m2_bm) != 16'd0);
 endfunction
-wire hzf = st_byte(m3) || st_byte(m4);
+wire hzf = st_byte(m3, bm3) || st_byte(m4, bm4);
+// synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && ((m2.r.v && bm2 != bmask(m2.r.a[3:0], nbytes(m2.r.msz))) ||
+	               (m3.r.v && !m3.split && bm3 != bmask(m3.x.pa[3:0], nbytes(m3.r.msz))) ||
+	               (m4.r.v && !m4.split && bm4 != bmask(m4.x.pa[3:0], nbytes(m4.r.msz)))))
+		$display("FAIL: dmu byte masks %h %h %h", bm2, bm3, bm4);
+// synthesis translate_on
 // any store older than the DC2 uop not yet performed: a table walk for the
 // DC2 uop must see it (the program may just have written a descriptor)
 wire st_older = (m3.r.v && (m3.r.mem == M_ST || m3.r.mem == M_RMW)) ||
@@ -1183,6 +1194,7 @@ always_ff @(posedge clk) begin
 
 		if (adv_dc1) begin
 			m2.r     <= m1;
+			bm2      <= bmask(m1.a[3:0], nbytes(m1.msz));
 			m2.x     <= x_dc1;
 			m2.split <= m1_split;
 			m2.x1    <= '0;
@@ -1204,11 +1216,12 @@ always_ff @(posedge clk) begin
 
 		if (adv_dc2) begin
 			m3 <= m2;
+			bm3 <= bm2;
 			e_dc2_done <= 1'b0;
 		end
 		else if (adv_ex) m3.r.v <= 1'b0;
 
-		if (adv_ex) begin m4 <= m3; m4_fq <= fq(m3); end
+		if (adv_ex) begin m4 <= m3; m4_fq <= fq(m3); bm4 <= bm3; end
 		else if (adv_wb) m4.r.v <= 1'b0;
 
 		if (adv_wb) e_wst_done <= 1'b0;
