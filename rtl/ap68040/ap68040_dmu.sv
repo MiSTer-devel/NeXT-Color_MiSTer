@@ -933,6 +933,15 @@ endfunction
 //--------------------------------------------------------------------------
 // WB fast store: a copyback store that hit, within one line
 //--------------------------------------------------------------------------
+// a split's second line address, registered (E_SP_W comes first, and the
+// engine holds DC2's record: the increment stays off the translation)
+logic [31:0] sp_a1;
+always_ff @(posedge clk) sp_a1 <= {m2.r.a[31:4] + 28'd1, 4'd0};
+// synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && e_st == E_SP_2 && sp_a1 != {m2.r.a[31:4] + 28'd1, 4'd0})
+		$display("FAIL: dmu sp_a1 %h, DC2's %h", sp_a1, m2.r.a);
+// synthesis translate_on
 wire wb_st   = m4.r.v && st_v && (m4.r.mem == M_ST || m4.r.mem == M_RMW);
 // the record's own terms (they change only as EX moves it in): registered,
 // so the store's answer to WB -- on the path to the interrupt boundary and
@@ -1411,7 +1420,7 @@ always_ff @(posedge clk) begin
 		end
 		E_SP_2: begin
 			xres_t x;
-			x  = xlate({m2.r.a[31:4] + 28'd1, 4'd0}, m2.r.smode, (m2.r.mem != M_LD),
+			x  = xlate(sp_a1, m2.r.smode, (m2.r.mem != M_LD),
 			           fc_tt(m2.r.fc) == TT_ALT, atc_hit, atc_e,
 			           tq_a[0], tq_a[1], tq_a[2], tq_a[3], lve_q);
 			// the second part's translation and lookup, registered (the
