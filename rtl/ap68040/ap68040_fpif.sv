@@ -452,6 +452,16 @@ function automatic logic [31:0] lst_dyn(input logic [15:0] ow, input logic [7:0]
 	b = 7'(n) * 7'd12;
 	lst_dyn = (ow[5:3] == 3'd4) ? -{25'd0, b} : {25'd0, b};
 endfunction
+// FMOVEM with the list in Dn: the adjustment (a population count times
+// 12, negated for -(An)) from the operand, registered; LIST holds a cycle
+// for it (ld_ok: computed from this uop's operand) -- the count and the
+// negation stayed on the path from EX's operand to WB's result
+logic [31:0] ld_q;
+logic        ld_ok;
+always_ff @(posedge clk) begin
+	ld_q  <= lst_dyn(opw_q, av[7:0]);
+	ld_ok <= nreset && ex_v && sub == FC_LIST && !adv && !kill;
+end
 // FMOVEM list and adjustment (LIST, combinational for its result)
 logic [7:0] l_now;
 logic [6:0] l_bytes;
@@ -633,7 +643,11 @@ always_comb begin
 				dkill = !cr_slots[imm[1:0]];
 				if (!crr_wait) hold = 1'b1;
 			end
-			FC_LIST: res_g = (ea_pd) ? -{25'd0, l_bytes} : {25'd0, l_bytes};
+			FC_LIST: begin
+				// a list in Dn: its adjustment registered first (ld_q)
+				if (ext_q[11] && !ld_ok) hold = 1'b1;
+				else res_g = (ea_pd) ? -{25'd0, l_bytes} : {25'd0, l_bytes};
+			end
 			FC_MVR: begin
 				res_g = mv_rev ? f_fmrd[31:0] : f_fmrd[95:64];
 				if (!mvr_wait) hold = 1'b1;
@@ -707,7 +721,7 @@ always_comb begin
 		end
 		FC_GET:  res = (imm[1:0] == 2'd1) ? get_q[63:32] : get_q[31:0];
 		FC_CRR:  res = f_crrd;
-		FC_LIST: res = ext_q[11] ? lst_dyn(opw_q, av[7:0]) : lst_q;
+		FC_LIST: res = ext_q[11] ? ld_q : lst_q;
 		FC_MVR:  res = mv_rev ? f_fmrd[31:0] : f_fmrd[95:64];
 		FC_DBCC: res = {bv[31:16], bv[15:0] - 16'd1};
 		FC_COND: res = {bv[31:8], {8{fp_cond(q_pred, f_cc)}}};   // FScc
