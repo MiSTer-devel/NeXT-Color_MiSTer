@@ -626,29 +626,42 @@ always_ff @(posedge clk) begin
 		end
 		// D1 consumed the end of a BTB-taken branch: the stream continues
 		// at its target (the words after it in the queue came from there)
+		// (every candidate from registers, one per consume value or per
+		// cfl; D1's late consume only selects -- as for qge_r)
 		begin
+			logic  [7:0] cfl_c;
+			logic [31:0] pc_c [8];
+			logic [30:0] tqn [2][4];
+			logic  [2:0] nn [2];
 			logic        cfl;
-			logic  [2:0] cj;
-			logic [30:0] tqn [4];
-			logic  [2:0] n;
-			cfl = 1'b0; cj = 3'd0;
-			for (int i = 6; i >= 0; i--)
-				if (3'(i) < consume && qb[i]) begin cfl = 1'b1; cj = 3'(i); end
+			logic [26:0] up1;
+			// consumed past a flagged word: one of qb[c-1:0] set
+			for (int c = 0; c < 8; c++) cfl_c[c] = |(qb[6:0] & 7'((8'd1 << c) - 8'd1));
 			// (a decode that ran past the flag is refetched at WB: the PC
 			// of what follows it does not matter)
-			qpc_r <= cfl ? {tq[0], 1'b0} : qpc_r + {28'd0, consume, 1'b0};
-			for (int i = 0; i < 4; i++) tqn[i] = tq[i];
-			n = tq_n;
-			if (cfl && n != 3'd0) begin
-				for (int i = 0; i < 3; i++) tqn[i] = tqn[i + 1];
-				n = n - 3'd1;
+			up1 = qpc_r[31:5] + 27'd1;
+			for (int c = 0; c < 8; c++) begin
+				logic [5:0] lo;
+				lo = {1'b0, qpc_r[4:0]} + {1'b0, 4'(c), 1'b0};
+				pc_c[c] = cfl_c[c] ? {tq[0], 1'b0} : {lo[5] ? up1 : qpc_r[31:5], lo[4:0]};
 			end
-			if (f3_n != 2'd0 && f3_b != 2'b00 && n != 3'd4) begin
-				tqn[n[1:0]] = f3_t;
-				n = n + 3'd1;
+			// the target queue without and with the consumed flag's pop
+			for (int s = 0; s < 2; s++) begin
+				for (int i = 0; i < 4; i++) tqn[s][i] = tq[i];
+				nn[s] = tq_n;
+				if (s == 1 && nn[s] != 3'd0) begin
+					for (int i = 0; i < 3; i++) tqn[s][i] = tqn[s][i + 1];
+					nn[s] = nn[s] - 3'd1;
+				end
+				if (f3_n != 2'd0 && f3_b != 2'b00 && nn[s] != 3'd4) begin
+					tqn[s][nn[s][1:0]] = f3_t;
+					nn[s] = nn[s] + 3'd1;
+				end
 			end
-			for (int i = 0; i < 4; i++) tq[i] <= tqn[i];
-			tq_n <= n;
+			cfl = cfl_c[consume];
+			qpc_r <= pc_c[consume];
+			for (int i = 0; i < 4; i++) tq[i] <= tqn[cfl][i];
+			tq_n <= nn[cfl];
 		end
 		f3_n  <= f2_n;
 		f3_f  <= f2_f; f3_d <= f2_d; f3_a <= f2_a;
