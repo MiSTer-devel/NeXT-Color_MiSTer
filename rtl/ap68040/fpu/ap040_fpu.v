@@ -172,6 +172,20 @@ wire        fr_dst_s = fr_valid[dst_r] ? fr_dst_raw[79]    : 1'b0;
 wire [14:0] fr_dst_e = fr_valid[dst_r] ? fr_dst_raw[78:64] : 15'h7FFF;
 wire [63:0] fr_dst_m = fr_valid[dst_r] ? fr_dst_raw[63:0]  : 64'hFFFF_FFFF_FFFF_FFFF;
 wire        fr_src_unsup = fr_valid[src_r] && fr_unsup[src_r];
+wire        fr_dst_unsup = fr_valid[dst_r] && fr_unsup[dst_r];
+// each register's unpack class (T_NUM/ZERO/INF/NAN), kept beside it like
+// fr_unsup: dispatch's state choice reads a flag instead of comparing the
+// 64-bit mantissa that comes through the register file's write bypass
+reg   [1:0] fr_tag [0:7];
+wire  [1:0] fr_src_tag = fr_valid[src_r] ? fr_tag[src_r] : 2'd3;   // T_NAN
+wire  [1:0] fr_dst_tag = fr_valid[dst_r] ? fr_tag[dst_r] : 2'd3;
+// frame_tag_x of the read register, from the two flags
+wire  [2:0] fr_src_ftag = (fr_src_tag == 2'd1) ? 3'd1 : fr_src_unsup ? 3'd4 :
+                          (fr_src_tag == 2'd3) ? 3'd3 : (fr_src_tag == 2'd2) ? 3'd2 : 3'd0;
+wire  [2:0] fr_dst_ftag = (fr_dst_tag == 2'd1) ? 3'd1 : fr_dst_unsup ? 3'd4 :
+                          (fr_dst_tag == 2'd3) ? 3'd3 : (fr_dst_tag == 2'd2) ? 3'd2 : 3'd0;
+wire [83:0] fr_src_ua = {fr_src_s, 2'd0, fr_src_e, fr_src_m, fr_src_tag};
+wire [83:0] fr_dst_ua = {fr_dst_s, 2'd0, fr_dst_e, fr_dst_m, fr_dst_tag};
 
 reg [31:0] fpcr;                  // [15:8] enables, [7:6] prec, [5:4] rnd
 reg [31:0] fpsr;                  // [27:24] cc, [23:16] quot, [15:8] exc, [7:3] aexc
@@ -426,6 +440,17 @@ reg         cap_unimp, cap_t, cap_e1, cap_pk;
 reg   [6:0] nlz_q;
 reg   [4:0] nz_ret;
 reg signed [17:0] e_w;        // working exponent (wrap safe)
+// F_BIN's operand compares, registered from the operand registers every
+// cycle.  F_BIN spends its first cycle (bin_h clear) writing nothing, so
+// in its second the flags describe the operands it decides on; the wide
+// mantissa compares then stay off F_BIN's next-state and a_m/grs muxes.
+reg        bin_h;
+reg        bq_a1, bq_b1;      // a_m / b_m == 1.0 (8000_0000_0000_0000)
+reg        bq_ah, bq_bh;      // a_m / b_m [63:40] == 80_0000 (single 1.0)
+reg        bq_abeq, bq_abgt;  // a_m == b_m, a_m > b_m
+reg        bq_egt, bq_eeq;    // signed a_e > b_e, a_e == b_e
+reg        bq_buns;           // the destination is an unsupported type
+reg        bq_fsub, bq_chop;  // r_op: FSUB family, FSGLMUL
 
 // These states already run in separate cycles. Select their input before
 // normalization so source, restored destination and add/subtract result
@@ -1249,6 +1274,9 @@ wire [79:0] fr_bank_wd = p6_v ? {p6_s, p6_z ? 15'd0 : p6_e[14:0], p6_z ? 64'd0 :
 wire fr_bank_uns  = p6_v     ? unsupported_x(p6_z ? 15'd0 : p6_e[14:0], p6_z ? 64'd0 : p6_m) :
                     fr_wb_we ? unsupported_x(fr_wb_e, fr_wb_m) :
                                unsupported_x(fm_wdata[94:80], fm_wdata[63:0]);
+wire [1:0] fr_bank_tag = p6_v ? unpack_x(p6_s, p6_z ? 15'd0 : p6_e[14:0], p6_z ? 64'd0 : p6_m) :
+                    fr_wb_we ? unpack_x(a_s, fr_wb_e, fr_wb_m) :
+                               unpack_x(fm_wdata[95], fm_wdata[94:80], fm_wdata[63:0]);
 wire fr_bank_nice = p6_v     ? nice_x(p6_z ? 15'd0 : p6_e[14:0], p6_z ? 64'd0 : p6_m) :
                     fr_wb_we ? nice_x(fr_wb_e, fr_wb_m) :
                                nice_x(fm_wdata[94:80], fm_wdata[63:0]);
@@ -1288,8 +1316,28 @@ end
 
 // synthesis translate_off
 always @(posedge clk)
+	if (nreset && ce && fst == F_BIN && bin_h &&
+	    {bq_ah, bq_bh, bq_a1, bq_b1, bq_abeq, bq_abgt, bq_egt, bq_eeq, bq_buns, bq_fsub, bq_chop} !=
+	    {a_m[63:40] == 24'h80_0000, b_m[63:40] == 24'h80_0000,
+	     a_m == 64'h8000_0000_0000_0000, b_m == 64'h8000_0000_0000_0000,
+	     a_m == b_m, a_m > b_m, $signed(a_e) > $signed(b_e), a_e == b_e,
+	     unsupported_x(b_e[14:0], b_m),
+	     r_op == 7'h28 || r_op == 7'h68 || r_op == 7'h6C, r_op == 7'h27}) begin
+		$display("FAIL: F_BIN's registered operand flags are stale");
+		$finish;
+	end
+always @(posedge clk)
 	if (ce && fst == F_NORM && a_t == T_NUM && a_m == 64'd0 && norm_shifted[66:3] != 64'd0) begin
 		$display("FAIL: F_NORM of a zero significand gave %h", norm_shifted[66:3]);
+		$finish;
+	end
+always @(posedge clk)
+	if (nreset && ce && (fr_src_ua != unpack_x(fr_src_s, fr_src_e, fr_src_m) ||
+	                     fr_dst_ua != unpack_x(fr_dst_s, fr_dst_e, fr_dst_m) ||
+	                     fr_src_ftag != frame_tag_x(fr_src_e, fr_src_m) ||
+	                     fr_dst_ftag != frame_tag_x(fr_dst_e, fr_dst_m))) begin
+		$display("FAIL: fr_tag src %0d %h/%h dst %0d %h/%h", src_r, fr_src_tag,
+		         fr_src_ftag, dst_r, fr_dst_tag, fr_dst_ftag);
 		$finish;
 	end
 always @(posedge clk)
@@ -1511,6 +1559,7 @@ always @(posedge clk) begin
 		grs <= 0; eff_sub <= 0; acc_hi <= 0; acc_lo <= 0;
 		qv <= 0; srem <= 0; srad <= 0; loop_n <= 0; op_kind <= 0;
 		sh_ret <= F_PACKI; e_w <= 0; r_pr <= 0; mv_st <= 0;
+		bin_h <= 0;
 		nsel <= 2'd0;
 		// Invalid entries read as the default positive nonsignaling NaN.
 		fr_valid <= 0;
@@ -1521,8 +1570,22 @@ always @(posedge clk) begin
 	else if (ce) begin
 		if (fr_bank_we) begin
 			fr_unsup[fr_bank_wa] <= fr_bank_uns;
+			fr_tag[fr_bank_wa]   <= fr_bank_tag;
 			fr_nice[fr_bank_wa]  <= fr_bank_nice;
 		end
+		// (cleared outside F_BIN, so an abort cannot leave it set)
+		if (fst != F_BIN) bin_h <= 1'b0;
+		bq_ah   <= (a_m[63:40] == 24'h80_0000);
+		bq_bh   <= (b_m[63:40] == 24'h80_0000);
+		bq_a1   <= (a_m == 64'h8000_0000_0000_0000);
+		bq_b1   <= (b_m == 64'h8000_0000_0000_0000);
+		bq_abeq <= (a_m == b_m);
+		bq_abgt <= (a_m > b_m);
+		bq_egt  <= ($signed(a_e) > $signed(b_e));
+		bq_eeq  <= (a_e == b_e);
+		bq_buns <= unsupported_x(b_e[14:0], b_m);
+		bq_fsub <= (r_op == 7'h28 || r_op == 7'h68 || r_op == 7'h6C);
+		bq_chop <= (r_op == 7'h27);
 		// a request the pipeline or the state machine cannot take yet
 		// (the pipeline draining, or a source still being computed)
 		req_pend <= rq && !(fst == F_IDLE && (pipe_issue || !pbusy) &&
@@ -1779,9 +1842,9 @@ always @(posedge clk) begin
 				// states use this existing exception shadow instead of building
 				// another 80-bit asynchronous FP-register read port around r_dst.
 				sh_dst  <= {fr_dst_s, fr_dst_e, 16'd0, fr_dst_m};
-				sh_dtag <= frame_tag_x(fr_dst_e, fr_dst_m);
+				sh_dtag <= fr_dst_ftag;
 				{b_s, b_e, b_m, b_t} <=
-					unpack_x(fr_dst_s, fr_dst_e, fr_dst_m);
+					fr_dst_ua;
 				// the operands as a datatype or unimplemented-instruction
 				// frame records them (F_CAP): the source raw -- a register's
 				// image; a memory operand in extended layout, a packed one
@@ -1789,7 +1852,7 @@ always @(posedge clk) begin
 				// set where it is found); a store's register in both
 				if (op_class == 3'b011) begin
 					sh_dst  <= {fr_src_s, fr_src_e, 16'd0, fr_src_m};
-					sh_dtag <= frame_tag_x(fr_src_e, fr_src_m);
+					sh_dtag <= fr_src_ftag;
 				end
 				if (op_class == 3'b010 && src_fmt == 3'd7) begin
 					sh_src  <= 96'd0;
@@ -1807,8 +1870,8 @@ always @(posedge clk) begin
 				end
 				else begin
 					sh_src  <= {fr_src_s, fr_src_e, 16'd0, fr_src_m};
-					sh_stag <= frame_tag_x(fr_src_e, fr_src_m);
-					r_stag  <= frame_tag_x(fr_src_e, fr_src_m);
+					sh_stag <= fr_src_ftag;
+					r_stag  <= fr_src_ftag;
 				end
 				if (op_class == 3'b011) begin
 					// FMOVE FPn,<ea>: packed decimal and denormal/unnormal
@@ -1828,7 +1891,7 @@ always @(posedge clk) begin
 					end
 					else begin
 						{a_s, a_e, a_m, a_t} <=
-							unpack_x(fr_src_s, fr_src_e, fr_src_m);
+							fr_src_ua;
 						begin fst <= F_SRC; wb_r <= (F_SRC == F_WB); acc_r <= 1'b0; end   // F_SRC routes stores via r_op = STORE
 						r_op <= 7'h7F;  // internal: store
 					end
@@ -1869,7 +1932,7 @@ always @(posedge clk) begin
 					end
 					else begin : disp_rr
 					reg [83:0] ua;
-					ua = unpack_x(fr_src_s, fr_src_e, fr_src_m);
+					ua = fr_src_ua;
 					{a_s, a_e, a_m, a_t} <= ua;
 					// a binary operation on a non-NaN source needs nothing
 					// from F_EXEC but its bookkeeping (no SNaN to quiet, no
@@ -2355,8 +2418,10 @@ always @(posedge clk) begin
 				end
 			end
 
-			F_BIN: begin : f_bin
+			F_BIN: if (!bin_h) bin_h <= 1'b1;   // the operand flags settle
+			else begin : f_bin
 				reg        s_a;
+				bin_h <= 1'b0;
 				// NaNs went through F_EXEC, which saved the source before
 				// quieting it. Keep that image for SNAN and datatype recovery.
 				if (!r_resume && a_t != T_NAN) begin
@@ -2364,11 +2429,8 @@ always @(posedge clk) begin
 					sh_stag <= r_stag;
 				end
 				// FSUB family: fold the source sign
-				s_a = (op_kind == 4'd1 &&
-				       (r_op == 7'h28 || r_op == 7'h68 || r_op == 7'h6C))
-				      ? ~a_s : a_s;
-				if (!r_resume && op_kind != 4'd4 &&
-				    unsupported_x(b_e[14:0], b_m)) begin
+				s_a = (op_kind == 4'd1 && bq_fsub) ? ~a_s : a_s;
+				if (!r_resume && op_kind != 4'd4 && bq_buns) begin
 					// The destination datatype fault is taken with a clean
 					// status byte: undo the source-SNaN record F_EXEC made a
 					// cycle earlier (the exception byte was zeroed at
@@ -2415,7 +2477,7 @@ always @(posedge clk) begin
 							reg signed [17:0] sE;
 							sE = $signed({a_e[16], a_e}) - 18'sd16383;
 							e_w <= (sE >>> 1) + 18'sd16383;
-							if (a_m == 64'h8000_0000_0000_0000 && !sE[0]) begin
+							if (bq_a1 && !sE[0]) begin
 								// Exact square root of an even power of two.
 								grs <= 0;
 								begin fst <= F_ROUND; wb_r <= (F_ROUND == F_WB); acc_r <= 1'b1; end
@@ -2471,8 +2533,7 @@ always @(posedge clk) begin
 						else begin : bin_addnum
 							reg        aswap;
 							reg [16:0] d;
-							aswap = ($signed(a_e) > $signed(b_e)) ||
-							        (a_e == b_e && a_m > b_m);
+							aswap = bq_egt || (bq_eeq && bq_abgt);
 							eff_sub <= (s_a != b_s);
 							if (aswap) begin
 								b_s <= s_a; b_e <= a_e; b_m <= a_m;
@@ -2494,13 +2555,13 @@ always @(posedge clk) begin
 					4'd2: begin : bin_mul
 						reg [63:0] am_eff, bm_eff;
 						reg        chop, a_p2, b_p2;
-						chop   = (r_op == 7'h27);
+						chop   = bq_chop;
 						am_eff = chop ? (a_m & 64'hFFFF_FF00_0000_0000) : a_m;
 						bm_eff = chop ? (b_m & 64'hFFFF_FF00_0000_0000) : b_m;
 						// an exact power of two (after the chop): the compare
 						// in parts on the operand, beside the chop's select
-						a_p2 = (a_m[63:40] == 24'h80_0000) && (chop || a_m[39:0] == 40'd0);
-						b_p2 = (b_m[63:40] == 24'h80_0000) && (chop || b_m[39:0] == 40'd0);
+						a_p2 = chop ? bq_ah : bq_a1;
+						b_p2 = chop ? bq_bh : bq_b1;
 						// Latch chopped operands before testing the fast path.  The
 						// old code used nonblocking masks and then immediately
 						// tested the unmasked values, bypassing the chop.
@@ -2613,10 +2674,10 @@ always @(posedge clk) begin
 							a_s <= a_s ^ b_s;
 							e_w <= $signed({b_e[16], b_e}) -
 							       $signed({a_e[16], a_e}) + 18'sd16383;
-							if (am_eff == 64'h8000_0000_0000_0000 || bm_eff == am_eff) begin
+							if (bq_a1 || bq_abeq) begin
 								// Division by a power of two, or equal normalized
 								// significands, is exact after exponent adjustment.
-								a_m <= (am_eff == 64'h8000_0000_0000_0000) ? bm_eff :
+								a_m <= bq_a1 ? bm_eff :
 								       64'h8000_0000_0000_0000;
 								grs <= 0;
 								begin fst <= F_ROUND; wb_r <= (F_ROUND == F_WB); acc_r <= 1'b1; end
