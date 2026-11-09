@@ -124,6 +124,11 @@ set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_VGA_OSD=1"
 # the DSP56001 runs in the FPGA (tc_dsp56k + rtl/dsp56k).  NEXT_DSP_ARM=1
 # selects the DSP on the ARM instead (tc_dsp + Main next_dsp), NEXT_NO_DSP=1
 # leaves it out (registers read 0)
+# DSP56K_DSPBLK: the DSP56001 AGU address-update adders (rtl/dsp56k/dsp56k_agu.sv,
+# 8 per address unit) are cyclonev_mac blocks (m18x18_sumof2, unregistered),
+# 16 DSP blocks for ~100 ALMs; without it they are fabric adders.
+# DSPBLOCKS_PLAN.md has the measurements.
+set_global_assignment -name VERILOG_MACRO "DSP56K_DSPBLK=1"
 # The pipelined AP68040 (rtl/next_ap68040.sv), as Minimig-AGA's AP68040 build:
 # no register retiming in the CPU (it adds ~6,000 registers for timing the core
 # does not need at 33 MHz; it closes 57 MHz without), synthesized for area.

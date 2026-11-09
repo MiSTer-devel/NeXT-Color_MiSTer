@@ -270,74 +270,26 @@ module dsp56k_core (
     // ------------------------------------------------------------------
     // AGU (dsp_calc_ea / dsp_update_rn*), E1
     // ------------------------------------------------------------------
-    function automatic [15:0] rev16(input [15:0] v);
-        integer k;
-        begin
-            for (k = 0; k < 16; k = k + 1) rev16[k] = v[15-k];
-        end
-    endfunction
+    // the address update itself (Hatari dsp_update_rn*) is dsp56k_agu_upd
+    // (dsp56k_agu.sv), one per address unit, its adders in DSP blocks
 
-    function automatic [15:0] smear(input [15:0] v);
-        reg [15:0] t;
-        begin
-            t = v;
-            t = t | (t >> 1); t = t | (t >> 2); t = t | (t >> 4); t = t | (t >> 8);
-            smear = t;
-        end
-    endfunction
-
-    // returns {valid, new value}; valid = 0 for M in $8000-$FFFE (no update)
-    function automatic [16:0] agu_upd(input [15:0] r, input [15:0] md, input [15:0] m);
-        reg [16:0] rr17, lob, hib, modulo;
-        reg [15:0] bufmask, absm, lsb;
-        reg [17:0] t;
-        begin
-            if (m == 16'hffff) begin
-                agu_upd = {1'b1, r + md};
-            end else if (m == 16'h0000) begin
-                lsb = md & (16'd0 - md);
-                agu_upd = {1'b1, rev16(rev16(r) + rev16(lsb))};
-            end else if (m[15] == 1'b0) begin
-                rr17    = {1'b1, r};
-                modulo  = {1'b0, m} + 17'd1;
-                bufmask = smear(m);
-                lob     = rr17 & ~{1'b0, bufmask};
-                hib     = lob + {1'b0, m};
-                absm    = md[15] ? (16'd0 - md) : md;
-                t       = {1'b0, rr17} + {{2{md[15]}}, md};
-                if ((absm & bufmask) != 16'd0) begin
-                    if ({1'b0, absm} > modulo) begin
-                        agu_upd = {1'b1, r};
-                    end else begin
-                        if (t > {1'b0, hib}) t = t - {1'b0, modulo};
-                        else if (t < {1'b0, lob}) t = t + {1'b0, modulo};
-                        agu_upd = {1'b1, t[15:0]};
-                    end
-                end else begin
-                    agu_upd = {1'b1, t[15:0]};
-                end
-            end else begin
-                agu_upd = {1'b0, r};
-            end
-        end
+    // modifier for an addressing mode
+    function automatic [15:0] agu_md(input [2:0] mode, input [15:0] n_s);
+        case (mode)
+            3'd0: agu_md = 16'd0 - n_s;       // (Rn)-Nn
+            3'd1, 3'd5: agu_md = n_s;         // (Rn)+Nn, (Rn+Nn)
+            3'd3: agu_md = 16'h0001;          // (Rn)+
+            default: agu_md = 16'hffff;       // (Rn)-, -(Rn)
+        endcase
     endfunction
 
     // one effective address: returns {commit, newr, addr}
     function automatic [32:0] calc_ea(input [2:0] mode, input [15:0] r_act, input [15:0] r_s,
-                                      input [15:0] n_s, input [15:0] m_s, input [15:0] ewv);
-        reg [16:0] u;
-        reg [15:0] addr, newr, md;
+                                      input [16:0] u, input [15:0] ewv);
+        reg [15:0] addr, newr;
         reg        commit;
         begin
             addr = r_s; newr = r_act; commit = 1'b0;
-            // one update unit: select the modifier first
-            case (mode)
-                3'd0: md = 16'd0 - n_s;       // (Rn)-Nn
-                3'd1, 3'd5: md = n_s;         // (Rn)+Nn, (Rn+Nn)
-                3'd3: md = 16'h0001;          // (Rn)+
-                default: md = 16'hffff;       // (Rn)-, -(Rn)
-            endcase
-            u = agu_upd(r_s, md, m_s);
             case (mode)
                 3'd0, 3'd1, 3'd2, 3'd3: if (u[16]) begin newr = u[15:0]; commit = 1'b1; end
                 3'd5: addr = u[16] ? u[15:0] : r_act;
@@ -359,8 +311,11 @@ module dsp56k_core (
     wire [15:0] r2_s = (agu_reg == {3'b010, d1_ea2_rn}) ? agu_val : rr[d1_ea2_rn];
     wire [15:0] n2_s = (agu_reg == {3'b011, d1_ea2_rn}) ? agu_val : nn[d1_ea2_rn];
     wire [15:0] m2_s = (agu_reg == {3'b100, d1_ea2_rn}) ? agu_val : mm[d1_ea2_rn];
-    wire [32:0] agu1 = calc_ea(d1_ea1_mode, rr[d1_ea1_rn], r1_s, n1_s, m1_s, ew1[15:0]);
-    wire [32:0] agu2 = calc_ea(d1_ea2_mode, rr[d1_ea2_rn], r2_s, n2_s, m2_s, ew1[15:0]);
+    wire [16:0] upd1, upd2;
+    dsp56k_agu_upd u_agu1 (.r(r1_s), .md(agu_md(d1_ea1_mode, n1_s)), .m(m1_s), .u(upd1));
+    dsp56k_agu_upd u_agu2 (.r(r2_s), .md(agu_md(d1_ea2_mode, n2_s)), .m(m2_s), .u(upd2));
+    wire [32:0] agu1 = calc_ea(d1_ea1_mode, rr[d1_ea1_rn], r1_s, upd1, ew1[15:0]);
+    wire [32:0] agu2 = calc_ea(d1_ea2_mode, rr[d1_ea2_rn], r2_s, upd2, ew1[15:0]);
     wire [15:0] agu1_addr = agu1[15:0];
     wire [15:0] agu1_newr = agu1[31:16];
     wire        agu1_commit = agu1[32] && d1_ea1_used && (d1_cls != C_LUA);

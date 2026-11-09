@@ -40,6 +40,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp_ram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp56k_rom.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp56k_alu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp56k_dec.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp56k_agu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/dsp56k_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/dsp56k/next_dsp_periph.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tc_scsi.sv
