@@ -460,7 +460,7 @@ logic [31:0] ld_q;
 logic        ld_ok;
 always_ff @(posedge clk) begin
 	ld_q  <= lst_dyn(opw_q, av[7:0]);
-	ld_ok <= nreset && ex_v && sub == FC_LIST && !adv && !kill;
+	ld_ok <= nreset && ex_v && (sub == FC_LIST || sub == FC_RS0) && !adv && !kill;
 end
 // FMOVEM list and adjustment (LIST, combinational for its result)
 logic [7:0] l_now;
@@ -491,6 +491,15 @@ function automatic logic [1:0] rs_kind_of(input logic [31:0] h);
 	             (h[31:24] == 8'd0) ? 2'd0 : 2'd1;
 endfunction
 wire rs_ok = (av[31:24] == 8'd0) || (av == IDLE_HDR) || (av == UNIMP_HDR) || (av == BUSY_HDR);
+// FRESTORE's header decode, registered like the FMOVEM list (RS0 holds a
+// cycle for it, ld_ok): the compares stayed on the path from EX's operand
+// to the exception vector and WB's exception address
+logic       rs_ok_q;
+logic [1:0] rs_k_q;
+always_ff @(posedge clk) begin
+	rs_ok_q <= rs_ok;
+	rs_k_q  <= rs_kind_of(av);
+end
 
 function automatic logic [31:0] busy_word(input logic [4:0] n);
 	case (n)
@@ -684,10 +693,12 @@ always_comb begin
 			              (sv_kind == 2'd2) ? unimp_word(imm[6:2]) :
 			              (sv_kind == 2'd1) ? IDLE_HDR : 32'd0;
 			FC_RS0: begin
-				if (bg) hold = 1'b1;
-				res_g = {25'd0, kbytes(rs_kind_of(av))};
-				// an unknown frame is a format error at the FRESTORE
-				if (!rs_ok) xvec = VEC_FMTERR;
+				if (bg || !ld_ok) hold = 1'b1;
+				else begin
+					res_g = {25'd0, kbytes(rs_kind_of(av))};
+					// an unknown frame is a format error at the FRESTORE
+					if (!rs_ok_q) xvec = VEC_FMTERR;
+				end
 			end
 			default: ;
 		endcase
@@ -731,7 +742,7 @@ always_comb begin
 		FC_SVW:  res = (sv_kind == 2'd3) ? busy_word(imm[6:2]) :
 		               (sv_kind == 2'd2) ? unimp_word(imm[6:2]) :
 		               (sv_kind == 2'd1) ? IDLE_HDR : 32'd0;
-		FC_RS0:  res = {25'd0, kbytes(rs_kind_of(av))};
+		FC_RS0:  res = {25'd0, kbytes(rs_k_q)};
 		default: ;
 	endcase
 end
