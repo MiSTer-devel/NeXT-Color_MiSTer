@@ -222,9 +222,10 @@ logic [31:0] f_crwd, f_iapc;
 logic        f_done, f_accepted, f_unimp, f_unsupp, f_excreq, f_used, f_wbok;
 logic        f_pbusy;          // pipelined operations in flight
 logic        f_pdone;          // the request went into the pipeline (this cycle)
-// the released operation ends cleanly: done, or its F_WB without an
-// enabled exception (a cycle sooner)
-wire         f_end = (f_done || f_wbok) && !f_excreq;
+// the released operation ends cleanly: done (registered; its F_WB
+// without an enabled exception, a cycle sooner, put the FPSR's exception
+// byte on the path into the stall chain)
+wire         f_end = f_done && !f_excreq;
 logic        fresh;            // a fused CHK's request went out last cycle
 logic  [7:0] f_excvec, f_curvec;
 logic [95:0] f_dout, f_fmrd;
