@@ -591,9 +591,10 @@ end
 // EX
 //--------------------------------------------------------------------------
 // operand values entering EX: A or B may be the load data
-wire [31:0] ex_av0 = (ex_u.a_src == OS_MEM) ? ex_ld : ex_a;
+logic       ex_amem, ex_bmem;  // a_src / b_src == OS_MEM, registered with the uop
+wire [31:0] ex_av0 = ex_amem ? ex_ld : ex_a;
 wire [31:0] ex_av  = ex_u.a_sxw ? {{16{ex_av0[15]}}, ex_av0[15:0]} : ex_av0;
-wire [31:0] ex_bv  = (ex_u.b_src == OS_MEM) ? ex_ld : ex_b;
+wire [31:0] ex_bv  = ex_bmem ? ex_ld : ex_b;
 
 logic [31:0] alu_res;
 logic  [4:0] alu_flags;
@@ -892,6 +893,12 @@ end
 
 
 // synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && ex_v && (ex_amem != (ex_u.a_src == OS_MEM) || ex_bmem != (ex_u.b_src == OS_MEM)))
+		$display("FAIL: ex_amem/ex_bmem %b%b", ex_amem, ex_bmem);
+always_ff @(posedge clk)
+	if (nreset && adv_dc2 && ex_v && !adv_ex)
+		$display("FAIL: DC2 advances into a held EX");
 always_ff @(posedge clk)
 	if (nreset && xw_nz != (xw_ph != 3'd0))
 		$display("FAIL: xw_nz %b, xw_ph %0d", xw_nz, xw_ph);
@@ -1362,6 +1369,10 @@ wire        exw_ag  = adv_ex && ex_d_eff;
 // exception flushes them too, and the flush clears the front file (fv), so
 // the forwarding needs only whether EX writes the register (the timing path)
 wire        exw_fw  = exw_ag;
+// ... and for the uop moving from DC2 into EX: EX is then empty or
+// advancing (adv_dc2 implies !stall_ex), so EX's valid stands for its
+// advance -- the stall chain stays off the capture
+wire        exw_cap = ex_v && ex_d_eff;
 assign exw_reg = ex_u.d_reg;
 assign exw_val = (ex_u.op == OP_CAS) ? ((ex_bv & ex_szm) | (ex_latch & ~ex_szm)) : ex_res;
 // synthesis translate_off
@@ -1818,10 +1829,12 @@ always_ff @(posedge clk) begin
 			ex_is_fp <= (dc2_u.op == OP_FPU);
 			ex_slow  <= is_slow(dc2_u.op);
 			ex_exc0  <= (dc2_u.exc == 8'd0);
+			ex_amem  <= (dc2_u.a_src == OS_MEM);
+			ex_bmem  <= (dc2_u.b_src == OS_MEM);
 			ex_ee    <= dc2_ee;
 			ex_er    <= dc2_er;
-			ex_a     <= (exw_fw && dc2_u.a_src == OS_REG && dc2_u.a_reg == exw_reg) ? exw_val : dc2_a;
-			ex_b     <= (exw_fw && dc2_u.b_src == OS_REG && dc2_u.b_reg == exw_reg) ? exw_val : dc2_b;
+			ex_a     <= (exw_cap && dc2_u.a_src == OS_REG && dc2_u.a_reg == exw_reg) ? exw_val : dc2_a;
+			ex_b     <= (exw_cap && dc2_u.b_src == OS_REG && dc2_u.b_reg == exw_reg) ? exw_val : dc2_b;
 			ex_ea    <= dc2_ea;
 			ex_ld    <= dm_ldata;
 			ex_upd   <= dc2_upd;
