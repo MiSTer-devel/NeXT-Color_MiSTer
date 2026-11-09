@@ -703,17 +703,19 @@ always_ff @(posedge clk)
 
 // the result, by the sub-operation only: EX takes it when the uop
 // completes, so it need not wait for the hold's conditions (ex_v, safe,
-// the pipeline): those stay off the result's path to the register file
+// the pipeline): those stay off the result's path to the register file.
+// None of these is CHK: the words are the latched ones (opw_q, ext_q),
+// so sub's compare with CHK stays off the result too
 always_comb begin
 	res = 32'd0;
 	case (sub)
-		FC_DISP: if (ocl == 3'b011) begin
-			if (ea_dn) case (fmt)
+		FC_DISP: if (ext_q[15:13] == 3'b011) begin
+			if (opw_q[5:3] == 3'd0) case (ext_q[12:10])
 				3'd4:    res = {bv[31:16], f_dout[95:80]};
 				3'd6:    res = {bv[31:8], f_dout[95:88]};
 				default: res = f_dout[95:64];
 			endcase
-			else case (fmt)
+			else case (ext_q[12:10])
 				3'd4:    res = {16'd0, f_dout[95:80]};
 				3'd6:    res = {24'd0, f_dout[95:88]};
 				default: res = f_dout[95:64];
@@ -725,7 +727,7 @@ always_comb begin
 		FC_MVR:  res = mv_rev ? f_fmrd[31:0] : f_fmrd[95:64];
 		FC_DBCC: res = {bv[31:16], bv[15:0] - 16'd1};
 		FC_COND: res = {bv[31:8], {8{fp_cond(q_pred, f_cc)}}};   // FScc
-		FC_SV0:  res = ea_pd ? -{25'd0, kbytes(sv_now)} : {25'd0, kbytes(sv_now)};
+		FC_SV0:  res = (opw_q[5:3] == 3'd4) ? -{25'd0, kbytes(sv_now)} : {25'd0, kbytes(sv_now)};
 		FC_SVW:  res = (sv_kind == 2'd3) ? busy_word(imm[6:2]) :
 		               (sv_kind == 2'd2) ? unimp_word(imm[6:2]) :
 		               (sv_kind == 2'd1) ? IDLE_HDR : 32'd0;
