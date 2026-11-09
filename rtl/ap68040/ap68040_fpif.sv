@@ -323,6 +323,13 @@ wire        is_fsave = (opw[15:6] == 10'b1111_0011_00);
 wire        is_frest = (opw[15:6] == 10'b1111_0011_01);
 wire        is_ftrap = is_cc && (eam == 3'd7) && (ear >= 3'd2) && (ear <= 3'd4);
 wire        ea_dn    = (eam == 3'd0);
+// COND / DBCC are never CHK: their words are the latched ones, so the
+// predicate decodes from the registers alone (sub's compare stays off
+// the path from the condition codes to the exception vector)
+wire        q_is_bcc   = (opw_q[15:7] == 9'b1111_0010_1);
+wire        q_is_ftrap = (opw_q[15:6] == 10'b1111_0010_01) && (opw_q[5:3] == 3'd7) &&
+                         (opw_q[2:0] >= 3'd2) && (opw_q[2:0] <= 3'd4);
+wire  [5:0] q_pred     = q_is_bcc ? opw_q[5:0] : ext_q[5:0];
 wire        ea_an    = (eam == 3'd1);
 wire        ea_pi    = (eam == 3'd3);
 wire        ea_pd    = (eam == 3'd4);
@@ -633,7 +640,7 @@ always_comb begin
 			FC_COND, FC_DBCC: begin
 				logic [5:0] pred;
 				logic c;
-				pred = is_bcc ? opw[5:0] : ext[5:0];
+				pred = q_pred;
 				c = fp_cond(pred, f_cc);
 				if (pred[4] && f_cc[0] && f_bsun_en) begin
 					xvec = VEC_BSUN;
@@ -643,8 +650,8 @@ always_comb begin
 					dkill = c;
 					taken = !c && (bv[15:0] != 16'd0);
 				end
-				else if (is_bcc) taken = c;
-				else if (is_ftrap) begin
+				else if (q_is_bcc) taken = c;
+				else if (q_is_ftrap) begin
 					if (c) begin xvec = VEC_TRAPCC; xfmt = 4'd2; xnext = 1'b1; end
 				end
 				else res_g = {bv[31:8], {8{c}}};      // FScc
@@ -672,6 +679,13 @@ always_comb begin
 	end
 end
 
+// synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && ex_v && (sub == FC_COND || sub == FC_DBCC) &&
+	    (q_pred != (is_bcc ? opw[5:0] : ext[5:0]) || q_is_bcc != is_bcc || q_is_ftrap != is_ftrap))
+		$display("FAIL: fpif COND's latched decode %h %b%b", q_pred, q_is_bcc, q_is_ftrap);
+// synthesis translate_on
+
 // the result, by the sub-operation only: EX takes it when the uop
 // completes, so it need not wait for the hold's conditions (ex_v, safe,
 // the pipeline): those stay off the result's path to the register file
@@ -695,7 +709,7 @@ always_comb begin
 		FC_LIST: res = ext_q[11] ? lst_dyn(opw_q, av[7:0]) : lst_q;
 		FC_MVR:  res = mv_rev ? f_fmrd[31:0] : f_fmrd[95:64];
 		FC_DBCC: res = {bv[31:16], bv[15:0] - 16'd1};
-		FC_COND: res = {bv[31:8], {8{fp_cond(is_bcc ? opw[5:0] : ext[5:0], f_cc)}}};   // FScc
+		FC_COND: res = {bv[31:8], {8{fp_cond(q_pred, f_cc)}}};   // FScc
 		FC_SV0:  res = ea_pd ? -{25'd0, kbytes(sv_now)} : {25'd0, kbytes(sv_now)};
 		FC_SVW:  res = (sv_kind == 2'd3) ? busy_word(imm[6:2]) :
 		               (sv_kind == 2'd2) ? unimp_word(imm[6:2]) :
@@ -938,7 +952,7 @@ always_ff @(posedge clk) begin
 			end
 			FC_COND, FC_DBCC: if (adv) begin
 				logic [5:0] pred;
-				pred = is_bcc ? opw[5:0] : ext[5:0];
+				pred = q_pred;
 				// a signaling predicate on unordered sets BSUN
 				if (pred[4] && f_cc[0]) f_bsun <= 1'b1;
 			end
