@@ -1469,7 +1469,10 @@ always_comb begin
 	fwe[1] = adv_ag && ag_u.upd2_v && !ag_dyncan; fwa[1] = ag_u.upd2_reg; fwd[1] = ag_u2v;
 	fwe_ag[0] = ag_v && ag_u.upd_v && !ag_dyncan;
 	fwe_ag[1] = ag_v && ag_u.upd2_v && !ag_dyncan;
-	fwe[2] = exw_v;                 fwa[2] = exw_reg;       fwd[2] = exw_val;
+	// (EX's write without its exception decision, as the forwarding: a uop
+	// that takes one reaches WB with !wb_ok, whose x_go kills every younger
+	// uop and clears the front-valid bits, so the value is never read)
+	fwe[2] = exw_fw;                fwa[2] = exw_reg;       fwd[2] = exw_val;
 	wcom  = wb_commit;
 	wpost = adv_wb && wb_is_exc && (wb_post_trap || wb_xcommit);
 	// the back file: two write ports, the later winning on the same
@@ -1817,8 +1820,8 @@ always_ff @(posedge clk) begin
 			ex_exc0  <= (dc2_u.exc == 8'd0);
 			ex_ee    <= dc2_ee;
 			ex_er    <= dc2_er;
-			ex_a     <= (exw_v && dc2_u.a_src == OS_REG && dc2_u.a_reg == exw_reg) ? exw_val : dc2_a;
-			ex_b     <= (exw_v && dc2_u.b_src == OS_REG && dc2_u.b_reg == exw_reg) ? exw_val : dc2_b;
+			ex_a     <= (exw_fw && dc2_u.a_src == OS_REG && dc2_u.a_reg == exw_reg) ? exw_val : dc2_a;
+			ex_b     <= (exw_fw && dc2_u.b_src == OS_REG && dc2_u.b_reg == exw_reg) ? exw_val : dc2_b;
 			ex_ea    <= dc2_ea;
 			ex_ld    <= dm_ldata;
 			ex_upd   <= dc2_upd;
