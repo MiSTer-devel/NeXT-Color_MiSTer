@@ -450,7 +450,10 @@ function automatic logic [31:0] opnd(input logic [1:0] src, input logic [4:0] r,
                                      input logic [31:0] imm, input logic sxw);
 	logic [31:0] v;
 	case (src)
-		OS_REG:  v = (exw_v && exw_reg == r) ? exw_val : rv;
+		// (EX's write of r is forwarded where the operand is captured in
+		// DC1, under exw_fw, which covers exw_v: not here, so the stall
+		// chain and EX's exception decision stay off this path)
+		OS_REG:  v = rv;
 		OS_IMM:  v = imm;
 		default: v = 32'd0;
 	endcase
