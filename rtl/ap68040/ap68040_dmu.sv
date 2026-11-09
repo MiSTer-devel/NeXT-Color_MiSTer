@@ -934,9 +934,19 @@ endfunction
 // WB fast store: a copyback store that hit, within one line
 //--------------------------------------------------------------------------
 wire wb_st   = m4.r.v && st_v && (m4.r.mem == M_ST || m4.r.mem == M_RMW);
-wire wb_fast = wb_st && !m4.split && m4.x.ok && !m4.x.flt && m4.x.hit &&
-               m4.x.cm == 2'b01 && dc_en && !m4.r.lock && (m4.r.msz != SZ_Q) &&
-               (e_st == E_IDLE) && !e_wst_done;
+// the record's own terms (they change only as EX moves it in): registered,
+// so the store's answer to WB -- on the path to the interrupt boundary and
+// every kill -- is a few registers and the hit
+function automatic logic fq(input mrec_t m);
+	fq = !m.split && m.x.ok && !m.x.flt && m.x.cm == 2'b01 && !m.r.lock && (m.r.msz != SZ_Q);
+endfunction
+logic m4_fq;
+wire wb_fast = wb_st && m4_fq && m4.x.hit && dc_en && (e_st == E_IDLE) && !e_wst_done;
+// synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && m4.r.v && m4_fq != fq(m4))
+		$display("FAIL: dmu m4_fq %b, the record's %b", m4_fq, fq(m4));
+// synthesis translate_on
 wire  [31:0] wbf_word = lanes32(lalign(st_data, m4.r.msz), m4.r.a[1:0]);
 wire  [15:0] wbf_be   = bmask(m4.r.a[3:0], nbytes(m4.r.msz));
 assign wfm      = wb_fast && !sn_frz;
@@ -1078,7 +1088,7 @@ always_ff @(posedge clk) begin
 	                      (tc_p ? m1.a[16:13]  : m1.a[15:12]);
 
 	if (!nreset) begin
-		m1 <= '0; m2 <= '0; m3 <= '0; m4 <= '0;
+		m1 <= '0; m2 <= '0; m3 <= '0; m4 <= '0; m4_fq <= 1'b0;
 		// (reset leaves the cache alone -- tags, state and data, MC68040UM
 		// 4.3: "reset does not invalidate the cache lines"; the valid and
 		// dirty bits have their power-up values from their initial blocks,
@@ -1189,7 +1199,7 @@ always_ff @(posedge clk) begin
 		end
 		else if (adv_ex) m3.r.v <= 1'b0;
 
-		if (adv_ex) m4 <= m3;
+		if (adv_ex) begin m4 <= m3; m4_fq <= fq(m3); end
 		else if (adv_wb) m4.r.v <= 1'b0;
 
 		if (adv_wb) e_wst_done <= 1'b0;
