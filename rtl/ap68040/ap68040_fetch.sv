@@ -196,20 +196,6 @@ wire [3:0] qh_n = qwrap(5'(qh) + {2'b00, consume});        // the head next cycl
 pd_t       qpr_rd;
 assign qpr_rd = pd_t'(qh_n[0] ? qpr_o[qh_n[3:1]] : qpr_e[qh_n[3:1]]);
 assign pd0_n = (cnt == {2'b00, consume}) ? f3_p[0] : qpr_rd;
-// the ring's writes this cycle (from registers: head + count)
-wire  [3:0] rw0  = qwrap(5'(qh) + cnt);
-wire  [3:0] rw1  = qwrap(5'(qh) + cnt + 5'd1);
-wire        rwe_e = (f3_n != 2'd0 && !rw0[0]) || (f3_n == 2'd2 && !rw1[0]);
-wire        rwe_o = (f3_n != 2'd0 &&  rw0[0]) || (f3_n == 2'd2 &&  rw1[0]);
-assign ar_ent0  = f3_p[0].ent;
-assign ar_ent1  = f3_p[1].ent;
-assign ar_we_e  = rwe_e;
-assign ar_we_o  = rwe_o;
-assign ar_row_e = rw0[0] ? rw1[3:1] : rw0[3:1];
-assign ar_row_o = rw0[0] ? rw0[3:1] : rw1[3:1];
-assign ar_swap  = rw0[0];
-assign ar_qh_n  = qh_n;
-assign ar_byp   = (cnt == {2'b00, consume});
 function automatic logic [3:0] qwrap(input logic [4:0] x);   // x mod QN, x < 2*QN
 	qwrap = (x >= 5'(QN)) ? 4'(x - 5'(QN)) : x[3:0];
 endfunction
@@ -237,6 +223,20 @@ logic  [1:0]  f3_n;
 logic [15:0]  f3_w [2];
 pdw_t         f3_r [2];        // the table's words for f3_w
 pd_t          f3_p [2];
+// the ring's writes this cycle (from registers: head + count)
+wire  [3:0] rw0  = qwrap(5'(qh) + cnt);
+wire  [3:0] rw1  = qwrap(5'(qh) + cnt + 5'd1);
+wire        rwe_e = (f3_n != 2'd0 && !rw0[0]) || (f3_n == 2'd2 && !rw1[0]);
+wire        rwe_o = (f3_n != 2'd0 &&  rw0[0]) || (f3_n == 2'd2 &&  rw1[0]);
+assign ar_ent0  = f3_p[0].ent;
+assign ar_ent1  = f3_p[1].ent;
+assign ar_we_e  = rwe_e;
+assign ar_we_o  = rwe_o;
+assign ar_row_e = rw0[0] ? rw1[3:1] : rw0[3:1];
+assign ar_row_o = rw0[0] ? rw0[3:1] : rw1[3:1];
+assign ar_swap  = rw0[0];
+assign ar_qh_n  = qh_n;
+assign ar_byp   = (cnt == {2'b00, consume});
 logic         f3_f, f3_d, f3_a;
 logic  [1:0]  f3_b;
 logic [30:0]  f3_t;
