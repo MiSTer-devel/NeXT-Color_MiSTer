@@ -2265,7 +2265,8 @@ always_ff @(posedge clk) begin
 		// the load entering EX, unless a younger writer is in AG or DC1
 		// (it will be waited for in any case)
 		if (dc2_capd && dc2_u.d_reg == ain_u.base) begin b = dc2_capv; cb = adv_dc2; end
-		if (dc2_capd && dc2_u.d_reg == ain_u.idx)  begin x = dc2_capv; cx = adv_dc2; end
+		// (not into the index: its scaling would follow the DMU's data path;
+		// the load reaches it a cycle later, through EX's write)
 		// the youngest writer's early result (not the uop leaving AG:
 		// its result is loaded next cycle)
 		wb = yw(ain_u.base);
@@ -2317,12 +2318,7 @@ always_ff @(posedge clk) begin
 		end
 		else begin
 			if (stale_x) agx_q <= ixf(exq_val, ag_u);
-			stale_x <= exw_ag && ag_u.idx_v && exw_reg == ag_u.idx && !cap_x &&
-			           !(dc2_capd && dc2_u.d_reg == ag_u.idx && adv_dc2);
-			if (dc2_capd && dc2_u.d_reg == ag_u.idx) begin
-				agx_q <= ixf(dc2_capv, ag_u);
-				if (adv_dc2) cap_x <= 1'b1;
-			end
+			stale_x <= exw_ag && ag_u.idx_v && exw_reg == ag_u.idx && !cap_x;
 		end
 	end
 	exq_val <= exw_val;
