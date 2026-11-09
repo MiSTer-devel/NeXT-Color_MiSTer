@@ -614,7 +614,10 @@ logic        md_go;           // this EX uop has started the unit
 logic        md_fin;          // ... and the unit has finished (done is a pulse: EX may
                               // be stalled by WB in that cycle)
 logic        md_z;            // ... is a divide by zero (from its second cycle)
-wire         ex_is_md   = (ex_u.op == OP_MUL) || (ex_u.op == OP_DIV);
+// EX's op classes and "no exception from earlier stages", registered as the
+// uop enters EX (ex_u is loaded only there): the hold and stall logic reads
+// them without an op compare (timing; checked below)
+logic        ex_is_md, ex_is_fp, ex_slow, ex_exc0;
 wire         ex_div0    = (ex_u.op == OP_DIV) &&
                           ((ex_u.sz == SZ_W) ? (ex_av[15:0] == 16'd0) : (ex_av == 32'd0));
 assign ex_md_start = ex_v && ex_is_md && !md_go && !ex_div0 && !md_busy && !ex_fault;
@@ -637,10 +640,9 @@ ap68040_muldiv #(.DSTEPS(DIV_STEPS)) md (
 );
 
 // FPU: OP_FPU uops act once no older uop is in flight (WB empty)
-wire         ex_is_fp = (ex_u.op == OP_FPU);
 ap68040_fpif #(.FPU_REVISION(FPU_REVISION), .FPU_PIPE(FPU_PIPE)) fpif (
 	.clk(clk), .nreset(nreset),
-	.ex_v(ex_v && ex_is_fp && !ex_fault && ex_u.exc == 8'd0), .sub(ex_u.cond),
+	.ex_v(ex_v && ex_is_fp && !ex_fault && ex_exc0), .sub(ex_u.cond),
 	.fuse(ex_u.sz == SZ_W), .eal(ex_u.sz == SZ_B),
 	.imm(ex_u.imm[7:0]), .immb(ex_u.imm_b[7:0]),
 	.av(ex_av), .bv(ex_bv), .aw(ex_a[15:0]), .bw(ex_b[15:0]),
@@ -658,7 +660,7 @@ ap68040_fpif #(.FPU_REVISION(FPU_REVISION), .FPU_PIPE(FPU_PIPE)) fpif (
 // operand stays off the stall path, and the exception goes a cycle later)
 assign ex_hold = (ex_v && ex_is_md && !md_z && !ex_fault && !md_done && !md_fin) ||
                  (ex_v && ex_slow && !ex_ph) ||
-                 (ex_v && ex_is_fp && !ex_fault && ex_u.exc == 8'd0 && fp_hold);
+                 (ex_v && ex_is_fp && !ex_fault && ex_exc0 && fp_hold);
 
 // multiply/divide result and flags
 logic [31:0] md_res;
@@ -926,7 +928,15 @@ typedef struct packed {
 	logic [15:0] sr_new;
 } exo_t;
 
-wire  ex_slow = is_slow(ex_u.op);
+// synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && ex_v && (ex_is_md != ((ex_u.op == OP_MUL) || (ex_u.op == OP_DIV)) ||
+	                       ex_is_fp != (ex_u.op == OP_FPU) || ex_slow != is_slow(ex_u.op) ||
+	                       ex_exc0 != (ex_u.exc == 8'd0))) begin
+		$display("FAIL: EX's registered op classes %b%b%b%b", ex_is_md, ex_is_fp, ex_slow, ex_exc0);
+		$finish;
+	end
+// synthesis translate_on
 // shifts and rotates: N and Z are the result's sign and zero test at the
 // size, taken in the second cycle from the registered result (the barrel
 // shift and a 32-bit zero test do not fit one cycle with the count logic)
@@ -1255,7 +1265,7 @@ wire        ex_mispred = ex_br && ((ex_taken != ex_u.pred) ||
 // nothing in between
 logic       eredir_pend, wb_eredir;
 wire        ex_early = ex_mispred && !ex_u.ser && !ex_sr_we &&
-                       !(ex_u.last && (smc_pend || ex_smc)) && (ex_u.exc == 8'd0) &&
+                       !(ex_u.last && (smc_pend || ex_smc)) && ex_exc0 &&
                        !ex_fault && (ex_xvec == 8'd0) && !ex_odd && !kill_now && !flush;
 
 // a change of flow to an odd address is an address error at the
@@ -1304,7 +1314,7 @@ wire ex_d_eff = ex_u.d_v && !ex_dkill;
 wire ex_odd_w = ex_br && (ex_bdb ? ex_u.target[0] :
                           (ex_u.op == OP_FPU) && fp_taken && ex_target[0]);
 assign exw_v   = adv_ex && ex_d_eff && !ex_fault && (ex_xvec == 8'd0) && !ex_odd_w &&
-                 (ex_u.exc == 8'd0);
+                 ex_exc0;
 // the same for AG's base/index loads: without EX's exception decision (a
 // late signal) -- a uop that takes an exception flushes AG with the rest
 wire        exw_ag  = adv_ex && ex_d_eff;
@@ -1760,6 +1770,10 @@ always_ff @(posedge clk) begin
 			             dc2_u.op == OP_DBCC, dc2_u.op == OP_MDRES, dc2_u.op == OP_DIV,
 			             dc2_u.op == OP_FPU};
 			ex_shk   <= shk_of(dc2_u.op);
+			ex_is_md <= (dc2_u.op == OP_MUL) || (dc2_u.op == OP_DIV);
+			ex_is_fp <= (dc2_u.op == OP_FPU);
+			ex_slow  <= is_slow(dc2_u.op);
+			ex_exc0  <= (dc2_u.exc == 8'd0);
 			ex_ee    <= dc2_ee;
 			ex_er    <= dc2_er;
 			ex_a     <= (exw_v && dc2_u.a_src == OS_REG && dc2_u.a_reg == exw_reg) ? exw_val : dc2_a;
@@ -1809,8 +1823,8 @@ always_ff @(posedge clk) begin
 			// (the same, and no exception: the DMU's store valid from a
 			// flip-flop -- wb_exc's compare sat on the stall chain)
 			wb_stv      <= (ex_u.mem == M_ST || ex_u.mem == M_RMW) && !ex_stkill &&
-			               ex_u.exc == 8'd0 && !ex_fault && ex_xvec == 8'd0 && !ex_odd;
-			wb_ok       <= ex_u.exc == 8'd0 && !ex_fault && ex_xvec == 8'd0 && !ex_odd;
+			               ex_exc0 && !ex_fault && ex_xvec == 8'd0 && !ex_odd;
+			wb_ok       <= ex_exc0 && !ex_fault && ex_xvec == 8'd0 && !ex_odd;
 			wb_st_data  <= ex_st;
 			// a store into the instruction stream just ahead (the fetch
 			// queue and the instructions in flight) refetches after itself:
@@ -1847,7 +1861,7 @@ always_ff @(posedge clk) begin
 				wb_exc_addr <= ex_u.pc;
 				wb_exc_ssw  <= 16'd0;
 			end
-			else if (ex_u.exc != 8'd0) begin
+			else if (!ex_exc0) begin
 				logic ifs, ifa;
 				// instruction fetch faults: a speculative one is refetched
 				// once (wb_refetch) and becomes an access error when it
@@ -1894,22 +1908,22 @@ always_ff @(posedge clk) begin
 				wb_exc_addr <= ex_u.pc;
 				wb_exc_ssw  <= 16'd0;
 			end
-			wb_exc_pcv <= ex_u.exc == 8'd0 && !ex_fault && ex_xvec == 8'd0 && ex_odd;
+			wb_exc_pcv <= ex_exc0 && !ex_fault && ex_xvec == 8'd0 && ex_odd;
 			wb_exc_pc  <= ex_odd_pc;
 			wb_exc_fmtv <= 1'b0;
 			wb_xcommit  <= 1'b0;
-			if (ex_u.exc == 8'd0 && !ex_fault && ex_is_fp && ex_xvec != 8'd0) begin
+			if (ex_exc0 && !ex_fault && ex_is_fp && ex_xvec != 8'd0) begin
 				wb_exc_pcv  <= 1'b1;
 				wb_exc_pc   <= fp_xnext ? ex_npc : ex_u.pc;
 				wb_exc_fmtv <= 1'b1;
 				wb_exc_fmt  <= fp_xfmt;
 				wb_xcommit  <= fp_xcommit;
 			end
-			wb_oddrte  <= ex_u.exc == 8'd0 && !ex_fault && ex_xvec == 8'd0 && ex_odd &&
+			wb_oddrte  <= ex_exc0 && !ex_fault && ex_xvec == 8'd0 && ex_odd &&
 			              ex_u.op == OP_RTE;
 			// CCR after this uop (CHK, CHK2, TRAPcc and divide-by-zero set
 			// their flags and then trap: the stacked SR carries them)
-			if (ex_u.exc == 8'd0 && !ex_fault) begin
+			if (ex_exc0 && !ex_fault) begin
 				logic [4:0] nf;
 				nf = (ex_u.op == OP_CAS) ? cas_flags : ex_flags;
 				ccr_f  <= (nf & ex_u.ccr_we) | (ccr_f & ~ex_u.ccr_we);
