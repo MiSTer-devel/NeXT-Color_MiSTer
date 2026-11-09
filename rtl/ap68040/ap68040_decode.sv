@@ -42,7 +42,13 @@ module ap68040_decode
 	input  logic  [7:0] win_bt,       // the word ends a branch the fetch BTB took
 	input  logic [31:0] bt_tgt,       // its target (the first flagged word's)
 	input  pd_t         pd0,
-	input  pd_t         pd0_n,         // pd0 next cycle (the attribute ROM's address)
+	input  pd_t         pd0_n,         // pd0 next cycle (simulation only)
+	input  logic  [8:0] ar_ent0, ar_ent1,   // the attribute ring's feed (fetch)
+	input  logic        ar_we_e, ar_we_o,
+	input  logic  [2:0] ar_row_e, ar_row_o,
+	input  logic        ar_swap,
+	input  logic  [3:0] ar_qh_n,
+	input  logic        ar_byp,
 	input  logic  [3:0] qcnt,
 	input  logic [15:0] qge,           // qge[k]: qcnt >= k (fetch's register)
 	input  logic [31:0] qpc,
@@ -240,15 +246,52 @@ endfunction
 //--------------------------------------------------------------------------
 // the instruction at the head: attributes of its decoder entry
 //--------------------------------------------------------------------------
-// the head's attributes: a ROM (block RAM) read with the head's entry a
-// cycle ahead, so it lines up with pd0 -- not a 276-entry table in logic
+// the head's attributes: a ROM (block RAM, two read ports) read with the
+// entries of F3's two words as they enter the queue, its outputs kept a
+// cycle later in a ring beside fetch's predecode ring (same banks, rows
+// and writes, delayed a cycle); the head's next attributes are selected
+// like its predecode: from the ring, from the ROM outputs for a slot
+// written last cycle, or -- the head being F3's first word -- the ROM's
+// port 0 output next cycle.  D1's consume reaches a register, not the
+// ROM's address (the loop through the queue head and back)
 pla_t a0;
-(* romstyle = "M10K" *) logic [$bits(pla_t)-1:0] attr_rom [0:511];
+localparam int AW = $bits(pla_t);
+(* romstyle = "M10K" *) logic [AW-1:0] attr_rom [0:511];
 initial begin
 `include "gen/ap68040_attr_rom.svh"
 end
-logic [$bits(pla_t)-1:0] attr_q;
-always_ff @(posedge clk) attr_q <= attr_rom[pd0_n.ent];
+logic [AW-1:0] ra0, ra1;                 // F3's words' attributes (last cycle's)
+always_ff @(posedge clk) begin
+	ra0 <= attr_rom[ar_ent0];
+	ra1 <= attr_rom[ar_ent1];
+end
+logic          d_we_e, d_we_o, d_swap;   // last cycle's ring writes
+logic  [2:0]   d_row_e, d_row_o;
+always_ff @(posedge clk) begin
+	d_we_e  <= nreset && ar_we_e;
+	d_we_o  <= nreset && ar_we_o;
+	d_row_e <= ar_row_e;
+	d_row_o <= ar_row_o;
+	d_swap  <= ar_swap;
+end
+wire [AW-1:0] ra_e = d_swap ? ra1 : ra0;    // bank E's word
+wire [AW-1:0] ra_o = d_swap ? ra0 : ra1;
+(* ramstyle = "MLAB, no_rw_check" *) logic [AW-1:0] ar_e [8];
+(* ramstyle = "MLAB, no_rw_check" *) logic [AW-1:0] ar_o [8];
+always_ff @(posedge clk) begin
+	if (d_we_e) ar_e[d_row_e] <= ra_e;
+	if (d_we_o) ar_o[d_row_o] <= ra_o;
+end
+logic [AW-1:0] ar_hd;                    // the head's (unless hd_rom)
+logic          hd_rom;                   // the head is last cycle's F3 word 0
+wire [AW-1:0] ar_rd   = ar_qh_n[0] ? ar_o[ar_qh_n[3:1]] : ar_e[ar_qh_n[3:1]];
+wire          ar_late = ar_qh_n[0] ? (d_we_o && d_row_o == ar_qh_n[3:1]) :
+                                     (d_we_e && d_row_e == ar_qh_n[3:1]);
+always_ff @(posedge clk) begin
+	hd_rom <= nreset && ar_byp;
+	ar_hd  <= ar_late ? (ar_qh_n[0] ? ra_o : ra_e) : ar_rd;
+end
+wire [AW-1:0] attr_q = hd_rom ? ra0 : ar_hd;
 always_comb a0 = pd0.legal ? pla_t'(attr_q) : '0;
 // synthesis translate_off
 always_ff @(posedge clk)

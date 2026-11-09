@@ -80,6 +80,16 @@ module ap68040_fetch
 	output logic [31:0] bt_tgt,       // the target of the first such word
 	output pd_t         pd0,          // predecode of win[0]
 	output pd_t         pd0_n,        // ... as it will be next cycle
+	// for D1's attribute ring (read beside the predecode ring, from F3's
+	// words as they arrive): F3's two decoder entries, this cycle's ring
+	// writes (per bank: enable, row, word 1 to bank E / word 0 to bank O),
+	// the head next cycle, and whether it is F3's first word (the bypass)
+	output logic  [8:0] ar_ent0, ar_ent1,
+	output logic        ar_we_e, ar_we_o,
+	output logic  [2:0] ar_row_e, ar_row_o,
+	output logic        ar_swap,
+	output logic  [3:0] ar_qh_n,
+	output logic        ar_byp,
 	output logic  [3:0] qcnt,         // words available in win (0..8)
 	output logic [15:0] qge,          // qge[k]: qcnt >= k, registered (timing)
 	output logic [31:0] qpc,
@@ -186,6 +196,20 @@ wire [3:0] qh_n = qwrap(5'(qh) + {2'b00, consume});        // the head next cycl
 pd_t       qpr_rd;
 assign qpr_rd = pd_t'(qh_n[0] ? qpr_o[qh_n[3:1]] : qpr_e[qh_n[3:1]]);
 assign pd0_n = (cnt == {2'b00, consume}) ? f3_p[0] : qpr_rd;
+// the ring's writes this cycle (from registers: head + count)
+wire  [3:0] rw0  = qwrap(5'(qh) + cnt);
+wire  [3:0] rw1  = qwrap(5'(qh) + cnt + 5'd1);
+wire        rwe_e = (f3_n != 2'd0 && !rw0[0]) || (f3_n == 2'd2 && !rw1[0]);
+wire        rwe_o = (f3_n != 2'd0 &&  rw0[0]) || (f3_n == 2'd2 &&  rw1[0]);
+assign ar_ent0  = f3_p[0].ent;
+assign ar_ent1  = f3_p[1].ent;
+assign ar_we_e  = rwe_e;
+assign ar_we_o  = rwe_o;
+assign ar_row_e = rw0[0] ? rw1[3:1] : rw0[3:1];
+assign ar_row_o = rw0[0] ? rw0[3:1] : rw1[3:1];
+assign ar_swap  = rw0[0];
+assign ar_qh_n  = qh_n;
+assign ar_byp   = (cnt == {2'b00, consume});
 function automatic logic [3:0] qwrap(input logic [4:0] x);   // x mod QN, x < 2*QN
 	qwrap = (x >= 5'(QN)) ? 4'(x - 5'(QN)) : x[3:0];
 endfunction
@@ -595,14 +619,8 @@ always_ff @(posedge clk) begin
 		begin
 			// (one write statement per bank, the word by the slot's parity:
 			// two statements read as two write ports and keep it in logic)
-			logic [3:0] w0, w1;
-			logic       we_e, we_o;
-			w0 = qwrap(5'(qh) + cnt);
-			w1 = qwrap(5'(qh) + cnt + 5'd1);
-			we_e = (f3_n != 2'd0 && !w0[0]) || (f3_n == 2'd2 && !w1[0]);
-			we_o = (f3_n != 2'd0 &&  w0[0]) || (f3_n == 2'd2 &&  w1[0]);
-			if (we_e) qpr_e[w0[0] ? w1[3:1] : w0[3:1]] <= w0[0] ? f3_p[1] : f3_p[0];
-			if (we_o) qpr_o[w0[0] ? w0[3:1] : w1[3:1]] <= w0[0] ? f3_p[0] : f3_p[1];
+			if (rwe_e) qpr_e[ar_row_e] <= rw0[0] ? f3_p[1] : f3_p[0];
+			if (rwe_o) qpr_o[ar_row_o] <= rw0[0] ? f3_p[0] : f3_p[1];
 			qh  <= qh_n;
 			qp0 <= pd0_n;
 		end

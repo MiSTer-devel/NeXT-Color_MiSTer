@@ -357,6 +357,10 @@ logic  [3:0] ras_rn;
 logic  [2:0] d_ras_tp;
 logic  [3:0] d_ras_n;
 pd_t         pd0, pd0_n;
+logic  [8:0] ar_ent0, ar_ent1;
+logic        ar_we_e, ar_we_o, ar_swap, ar_byp;
+logic  [2:0] ar_row_e, ar_row_o;
+logic  [3:0] ar_qh_n;
 logic  [3:0] qcnt;
 logic [15:0] qge;
 logic [31:0] qpc;
@@ -378,6 +382,9 @@ ap68040_fetch fetch (
 	.win_bt(win_bt), .bt_tgt(bt_tgt),
 	.pd0(pd0), .pd0_n(pd0_n), .qcnt(qcnt), .qge(qge), .qpc(qpc), .consume(consume),
 	.q_odd(q_odd),
+	.ar_ent0(ar_ent0), .ar_ent1(ar_ent1), .ar_we_e(ar_we_e), .ar_we_o(ar_we_o),
+	.ar_row_e(ar_row_e), .ar_row_o(ar_row_o), .ar_swap(ar_swap),
+	.ar_qh_n(ar_qh_n), .ar_byp(ar_byp),
 	.btb_we(btb_we), .btb_wi(btb_wi), .btb_wv(btb_wv), .btb_wtag(btb_wtag),
 	.btb_wslot(btb_wslot), .btb_wkind(btb_wkind), .btb_wtgt(btb_wtgt),
 	.d_ras(d_ras), .d_ras_tp(d_ras_tp), .d_ras_n(d_ras_n),
@@ -403,6 +410,9 @@ ap68040_decode #(.LOOP_PRED(LOOP_PRED)) dec (
 	.win(win), .win_flt(win_flt), .win_fdem(win_fdem), .win_fatc(win_fatc),
 	.win_bt(win_bt), .bt_tgt(bt_tgt),
 	.pd0(pd0), .pd0_n(pd0_n), .qcnt(qcnt), .qge(qge), .qpc(qpc), .q_odd(q_odd),
+	.ar_ent0(ar_ent0), .ar_ent1(ar_ent1), .ar_we_e(ar_we_e), .ar_we_o(ar_we_o),
+	.ar_row_e(ar_row_e), .ar_row_o(ar_row_o), .ar_swap(ar_swap),
+	.ar_qh_n(ar_qh_n), .ar_byp(ar_byp),
 	.smode(sr[13]),
 	.consume(consume), .d_redir_v(d_redir_v), .d_redir_pc(d_redir_pc),
 	.rq_n(rq_n), .rq0(rq0), .rq1(rq1), .rq_pop(rq_pop), .rq_pop_e(rq_pop_e),
