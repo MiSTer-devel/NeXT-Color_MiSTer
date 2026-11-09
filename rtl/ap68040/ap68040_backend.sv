@@ -257,6 +257,7 @@ logic [15:0] xi_sr, xi_vecw, xi_ssw;
 logic [31:0] xi_vaddr, xi_ea, xi_w3a, xi_w3d;
 logic        xi_f7;           // the frame is format $7: T5-T7 too
 logic  [2:0] xw_ph;           // exception entry: back-file writes of T5-T13
+logic        xw_nz;           // xw_ph != 0, registered (the issue stop)
 
 assign sr   = {sr_r[15:5], ccr_b};
 assign dtt0 = dtt0_r;
@@ -312,7 +313,7 @@ assign in_rdy  = (SKID ? !sk_v : !stall_ag) && !flush && !stopped && !eredir_pen
 // (the back-file writes of the routine's operands take several cycles
 // after the flush: the sequencer must not issue from the old stream, which
 // the fetch queue still holds, before exc_go)
-assign exc_pend = (xw_ph != 3'd0);
+assign exc_pend = xw_nz;
 wire         ag_take = !stall_ag && !stopped && !halted;   // AG loads ain_u
 
 //--------------------------------------------------------------------------
@@ -891,6 +892,9 @@ end
 
 
 // synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && xw_nz != (xw_ph != 3'd0))
+		$display("FAIL: xw_nz %b, xw_ph %0d", xw_nz, xw_ph);
 always_ff @(posedge clk)
 	if (nreset && ex_v && ex_u.op == OP_BF && (bf_rot_q & bf_top) != 32'd0 &&
 	    clz32(bf_rot_q & bf_top) != clz32_ref(bf_rot_q & bf_top))
@@ -1650,6 +1654,7 @@ always_ff @(posedge clk) begin
 		wb_eredir   <= 1'b0;
 		fv <= 32'd0;
 		xw_ph <= 3'd0;
+		xw_nz <= 1'b0;
 		ccr_f   <= 5'd0;
 		ccr_b   <= 5'd0;
 		sr_r    <= 16'h2700;
@@ -2090,6 +2095,7 @@ always_ff @(posedge clk) begin
 			redir_v  <= 1'b0;
 			ras_rv   <= 1'b0;
 			xw_ph    <= 3'd1;          // T8-T13 (and T5-T7) first, then exc_go
+			xw_nz    <= 1'b1;
 			xi_f7    <= (x_fmt == 4'h7);
 			exc_kind <= x_kind;
 			exc_ssp  <= x_ssp;
@@ -2129,6 +2135,7 @@ always_ff @(posedge clk) begin
 			xw_ph <= xw_ph + 3'd1;
 			if ((xw_ph == 3'd3 && !xi_f7) || xw_ph == 3'd5) begin
 				xw_ph  <= 3'd0;
+				xw_nz  <= 1'b0;
 				exc_go <= 1'b1;
 			end
 		end
