@@ -744,8 +744,26 @@ logic        cm_pend;           // the next instruction continues a MOVEM
 logic [31:0] cm_ea, cm_pc;
 logic [31:0] wb_mv_ea;          // the WB MOVEM transfer's calculated EA
 
-// leading zero count of a nonzero 32-bit value, as a balanced tree
+// leading zero count of a nonzero 32-bit value: the first nonzero nibble
+// (a priority encoder over the eight nibbles' zero tests) and that
+// nibble's own count, selected -- every nibble's count and zero test in
+// parallel, not a chain of shifts (BFFFO's path into the offset adder)
 function automatic logic [4:0] clz32(input logic [31:0] v);
+	logic [7:0] nz;
+	logic [1:0] c [8];
+	logic [2:0] f;
+	for (int j = 0; j < 8; j++) begin
+		logic [3:0] q;
+		q = v[31 - 4*j -: 4];
+		nz[j] = |q;
+		c[j]  = q[3] ? 2'd0 : q[2] ? 2'd1 : q[1] ? 2'd2 : 2'd3;
+	end
+	f = 3'd7;
+	for (int j = 7; j >= 0; j--) if (nz[j]) f = 3'(j);
+	clz32 = {f, c[f]};
+endfunction
+// synthesis translate_off
+function automatic logic [4:0] clz32_ref(input logic [31:0] v);
 	logic [4:0] n;
 	logic [31:0] x;
 	x = v;
@@ -754,8 +772,16 @@ function automatic logic [4:0] clz32(input logic [31:0] v);
 	n[2] = (x[31:28] == 4'd0);  if (n[2]) x = {x[27:0], 4'd0};
 	n[1] = (x[31:30] == 2'd0);  if (n[1]) x = {x[29:0], 2'd0};
 	n[0] = !x[31];
-	clz32 = n;
+	clz32_ref = n;
 endfunction
+initial begin
+	for (int i = 0; i < 32; i++) for (int k = 0; k < 64; k++) begin
+		logic [31:0] t;
+		t = (32'h8000_0000 >> i) | (($urandom & 32'h7FFF_FFFF) >> i);
+		if (clz32(t) != clz32_ref(t)) $display("FAIL: clz32(%h) %0d, the reference %0d", t, clz32(t), clz32_ref(t));
+	end
+end
+// synthesis translate_on
 logic  [7:0] bf_lonew;          // memory form: the new byte after the long
 logic [31:0] bf_res;
 logic  [7:0] bf_lo_out;
@@ -863,6 +889,13 @@ always_comb begin
 	endcase
 end
 
+
+// synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && ex_v && ex_u.op == OP_BF && (bf_rot_q & bf_top) != 32'd0 &&
+	    clz32(bf_rot_q & bf_top) != clz32_ref(bf_rot_q & bf_top))
+		$display("FAIL: clz32 %0d, the reference %0d", clz32(bf_rot_q & bf_top), clz32_ref(bf_rot_q & bf_top));
+// synthesis translate_on
 
 //--------------------------------------------------------------------------
 // EX result selection
