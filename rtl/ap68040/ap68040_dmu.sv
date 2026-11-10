@@ -1114,12 +1114,15 @@ always_comb begin
 		if (lve_q[i] && tq_b[i] == tw_da[31:10]) begin tw_hw_h = 1'b1; tw_hw_w = 2'(i); end
 end
 // the data RAM's way for the engine's line readers, one select (and one
-// line multiplexer) for them, every input a flip-flop: the snooper's way
-// while it has the cache (the engine is frozen then), the walk's
+// line multiplexer) for them, every input a flip-flop: the walk's
 // descriptor way, else f_way -- the fill's or push's victim way, or the
-// hit way an operand or MOVE16 read (E_S_RD, E_SP_2) set
-wire  [1:0]  dq_wsel = sn_frz ? sn_way : (e_st == E_TW_DLK) ? tw_hwq : f_way;
+// hit way an operand or MOVE16 read (E_S_RD, E_SP_2) set.  The snooper
+// reads its own way through its own multiplexer: the engine is frozen
+// while the snooper has the cache, and sharing the select put the freeze
+// (fanout 200+) in front of every engine reader of the line
+wire  [1:0]  dq_wsel = (e_st == E_TW_DLK) ? tw_hwq : f_way;
 wire [127:0] dq_w    = dq_rn[dq_wsel];
+wire [127:0] dq_sn   = dq_rn[sn_way];
 // the engine's operand bytes, one extractor for its states: E_SP_3 the
 // rest of a split load from the stolen read, E_S_ACT from the line a fill
 // delivered (bo_line), E_S_RD2 from the read way (through the shared line
@@ -2663,7 +2666,15 @@ always_ff @(posedge clk)
 
 // snoop: the line found, valid with sn_look (the RAM still reads the
 // snooped set in the first H cycle)
-assign sn_line = (sn_src == 2'd0) ? dq_w : (sn_src == 2'd1) ? pv_line : bo_line;
+assign sn_line = (sn_src == 2'd0) ? dq_sn : (sn_src == 2'd1) ? pv_line : bo_line;
+// synthesis translate_off
+// (the line is read with sn_look, while the snooper still has the cache)
+always_ff @(posedge clk)
+	if (nreset && sn_look && !sn_frz) begin
+		$display("FAIL: dmu: sn_look outside the snooper's freeze");
+		$finish;
+	end
+// synthesis translate_on
 
 assign tw_busy = (e_st == E_TW_START) || (e_st == E_TW_DESC) || (e_st == E_TW_DESCW) || (e_st == E_TW_DESCW2) ||
                  (e_st == E_TW_DLK) || (e_st == E_TW_DBUS) || (e_st == E_TW_EVAL) ||

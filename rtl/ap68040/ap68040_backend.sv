@@ -1005,6 +1005,17 @@ always_ff @(posedge clk)
 	end
 // synthesis translate_on
 exo_t xf, xs, xs_q;
+// The slow unit's result (shifts, rotates, BCD, PACK/UNPK: the ops whose
+// xs.res is sl_res) is registered on its own, so the funnel does not go
+// through xs's per-op result select into xs_q; the second cycle picks it
+// with registered selects (ex_slow, xs_sl), as one level with xf and xs_q
+logic [31:0] sl_res_q;
+logic        xs_sl;
+function automatic logic sl_op(input logic [6:0] o);
+	// (the slow ops whose case below sets its own xs.res)
+	sl_op = !(o == OP_CHK2B || o == OP_SPR || o == OP_MISC ||
+	          o == OP_IACKV || o == OP_RTEF || o == OP_BF);
+endfunction
 
 logic [31:0] sl_res;
 logic  [4:0] sl_flags;
@@ -1112,7 +1123,7 @@ end
 
 // slow operations (first EX cycle)
 always_comb begin
-	xs.res    = sl_res;
+	xs.res    = 32'd0;             // (sl_res: sl_res_q)
 	xs.flags  = ex_shift ? {sl_flags[4], 2'b00, sl_flags[1:0]} : sl_flags;
 	xs.dkill  = 1'b0;
 	xs.taken  = 1'b0;
@@ -1222,14 +1233,29 @@ always_comb begin
 	endcase
 end
 
+// synthesis translate_off
+// the slow result as xs_q held it with sl_res as xs's default
+logic [31:0] sim_xsres_q;
+always_ff @(posedge clk) begin
+	if (ex_v && ex_slow && !ex_ph && !(ex_v && ex_pre && !ex_pb))
+		sim_xsres_q <= sl_op(ex_u.op) ? sl_res : xs.res;
+	if (nreset && ex_v && ex_slow && ex_ph && ex_res != sim_xsres_q) begin
+		$display("FAIL: slow result %h, the xs-registered %h (op %0d, pc %h)",
+		         ex_res, sim_xsres_q, ex_u.op, ex_u.pc);
+		$finish;
+	end
+end
+// synthesis translate_on
+
 // EX outputs: the registered slow result in a slow op's second cycle
 always_comb begin
 	exo_t x;
 	x = ex_slow ? xs_q : xf;
+	if (ex_slow && xs_sl) x.res = sl_res_q;
 	if (ex_slow && ex_shift) begin
-		x.flags[3] = (ex_u.sz == SZ_B) ? xs_q.res[7] : (ex_u.sz == SZ_W) ? xs_q.res[15] : xs_q.res[31];
-		x.flags[2] = (ex_u.sz == SZ_B) ? (xs_q.res[7:0] == 8'd0) :
-		             (ex_u.sz == SZ_W) ? (xs_q.res[15:0] == 16'd0) : (xs_q.res == 32'd0);
+		x.flags[3] = (ex_u.sz == SZ_B) ? sl_res_q[7] : (ex_u.sz == SZ_W) ? sl_res_q[15] : sl_res_q[31];
+		x.flags[2] = (ex_u.sz == SZ_B) ? (sl_res_q[7:0] == 8'd0) :
+		             (ex_u.sz == SZ_W) ? (sl_res_q[15:0] == 16'd0) : (sl_res_q == 32'd0);
 	end
 	ex_res    = x.res;
 	ex_flags  = x.flags;
@@ -1700,6 +1726,8 @@ always_ff @(posedge clk) begin
 		ex_ph   <= 1'b0;
 		ex_pb   <= 1'b0;
 		xs_q    <= '0;
+		sl_res_q <= '0;
+		xs_sl    <= 1'b0;
 		md_rem  <= 32'd0;
 		md_lol  <= 32'd0;
 		md_ovfl <= 1'b0;
@@ -1863,6 +1891,8 @@ always_ff @(posedge clk) begin
 		else if (ex_v && ex_slow && !ex_ph) begin
 			ex_ph <= 1'b1;
 			xs_q  <= xs;
+			sl_res_q <= sl_res;
+			xs_sl    <= sl_op(ex_u.op);
 		end
 		if (adv_ex || kill_now) begin ex_ph <= 1'b0; ex_pb <= 1'b0; end
 

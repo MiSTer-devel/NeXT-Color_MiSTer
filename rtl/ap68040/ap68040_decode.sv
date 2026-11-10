@@ -743,6 +743,12 @@ end
 
 // synthesis translate_off
 always_ff @(posedge clk)
+	if (nreset && ph == PH_IDLE && go_part && nrec.target != ntarget) begin
+		$display("FAIL: decode: a first part's target %h is not ntarget %h at %h",
+		         nrec.target, ntarget, qpc);
+		$finish;
+	end
+always_ff @(posedge clk)
 	if (nreset && ph == PH_IDLE && go_part && (a0.rt == UA_JSR || a0.rt == UA_JMP) &&
 	    (nrec.ea0.m == EM_ABSW || nrec.ea0.m == EM_ABSL || nrec.ea0.m == EM_PC16)) begin
 		$display("FAIL: decode: a JSR/JMP with a known target is a first part at %h", qpc);
@@ -1000,6 +1006,11 @@ always_ff @(posedge clk) begin
 			if (go_part) begin
 				part <= nrec;
 				if (ph == PH_IDLE) begin
+					// (a first part never faults -- a fault ends the
+					// decode -- so its target is ntarget, without the
+					// fault address: that select, merged into the target
+					// adder's input, put the fault mask in front of it)
+					part.target <= ntarget;
 					part_call <= rcall;
 					part_ret  <= rret;
 					part_fpg  <= fpg;
