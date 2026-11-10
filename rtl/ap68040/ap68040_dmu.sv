@@ -521,6 +521,32 @@ assign dq2 = dq_new ? dqc_m2 : dqh2;
 logic        atc_hit;
 atce_t       atc_e;
 logic  [3:0] atc_hv, atc_hvd;
+// the main port's search, registered every clock: a fast split read's
+// stolen lookup (E_SP_2) waits one cycle more on the held address and
+// translates from these, keeping the ATC's tag compare and entry select off
+// xlate's physical-address, fault and cache-tag logic.  (Not E_S_XL2: its
+// re-lookup after a fill must stay as short as it is -- t_cbsplit 28-29
+// time an alternate master's write after the fill's bus release, and one
+// cycle more there lets that snoop invalidate the line every time, a
+// fill/re-lookup livelock.)
+logic        atc_hit_q;
+atce_t       atc_e_q;
+logic  [3:0] atc_hv_q;
+always_ff @(posedge clk) begin
+	atc_hit_q <= atc_hit;
+	atc_e_q   <= atc_e;
+	atc_hv_q  <= atc_hv;
+end
+// synthesis translate_off
+// (the held address: the registered search is the live one where it is used)
+always_ff @(posedge clk)
+	if (nreset && e_st == E_SP_2 && !sn_frz &&
+	    (atc_hit_q != atc_hit || atc_hv_q != atc_hv || (atc_hit && atc_e_q != atc_e))) begin
+		$display("FAIL: dmu: registered ATC search %b/%b differs from the live %b/%b in %s",
+		         atc_hit_q, atc_hv_q, atc_hit, atc_hv, e_st.name());
+		$finish;
+	end
+// synthesis translate_on
 logic [19:0] atc_wpa [4], atc_wpad [4];
 logic  [3:0] m1_aset;            // DC1's ATC set, registered with its address
 // The main ATC port's set, a flip-flop: DC1's (m1_aset) one cycle, the
@@ -783,7 +809,7 @@ wire st_simple = m2.r.v && (m2.r.mem == M_ST) && m2.x.ok && !m2.x.flt && !m2.spl
 typedef enum logic [5:0] {
 	E_IDLE,
 	E_S_START, E_S_XL, E_S_XLW, E_S_XL2, E_S_ACT, E_S_RD, E_S_RDW, E_S_RD2, E_S_BUSD,
-	E_S_NEXT, E_S_DONE, E_SP_W, E_SP_2, E_SP_3,
+	E_S_NEXT, E_S_DONE, E_SP_W, E_SP_W2, E_SP_2, E_SP_3,
 	E_W_START, E_W_PART, E_W_DONE,
 	E_M_START, E_M_PG, E_M_SCAN, E_M_SCANW, E_M_SCAN2, E_M_IC, E_M_DONE, E_M_CLR,
 	E_FILL, E_FILLW, E_FILL_W, E_FILL_INS, E_PUSHV, E_PUSHVW, E_PUSHV_W, E_PUSHV_B,
@@ -814,7 +840,7 @@ logic        sp_dw;               // a write to the next set while its
 // engine states that write no data, tag or valid bit: the RAM outputs a
 // lookup captured stay good (a fast split read; the RAM re-reads the held
 // DC1 set after its stolen read, steal_q)
-wire  e_quiet = (e_st == E_IDLE) || (e_st == E_S_START) || (e_st == E_SP_W) ||
+wire  e_quiet = (e_st == E_IDLE) || (e_st == E_S_START) || (e_st == E_SP_W) || (e_st == E_SP_W2) ||
                 (e_st == E_SP_2) || (e_st == E_SP_3) || (e_st == E_S_DONE && sp_job);
 logic        e_job;               // the engine owns the DC2 uop until it is done
 
@@ -1353,9 +1379,10 @@ always_ff @(posedge clk) begin
 			end
 			else if (wb_slow)
 				e_st <= E_W_START;
-			else if ((dc2_slow || (e_job && m2.r.v && !e_dc2_done)) && !kill_now) begin
-				// the job's kill mark is cleared HERE, where the uop is known
-				// alive (kill_now is excluded), not in E_S_START: a kill can
+			else if (dc2_slow || (e_job && m2.r.v && !e_dc2_done)) begin
+				// the job's kill mark is cleared HERE, as the job is
+				// scheduled (a kill this same cycle sets it again in the
+				// kill block below, which runs later), not in E_S_START: a kill can
 				// land while the engine sits in E_S_START frozen by a snoop
 				// (the kill block below runs every clock, the case does not),
 				// and E_S_START's body, run after the freeze, would erase it
@@ -1401,7 +1428,8 @@ always_ff @(posedge clk) begin
 			else
 				e_st   <= m2.x.ok ? E_S_ACT : E_S_XL;
 		end
-		E_SP_W: e_st <= E_SP_2;         // the RAMs register the stolen address
+		E_SP_W: e_st <= E_SP_W2;        // the RAMs register the stolen address
+		E_SP_W2: e_st <= E_SP_2;        // atc_*_q register the ATC's search
 		E_SP_3: begin
 			logic [2:0] n0;
 			n0 = 3'(5'd16 - {1'b0, m2.r.a[3:0]});
@@ -1434,7 +1462,7 @@ always_ff @(posedge clk) begin
 		E_SP_2: begin
 			xres_t x;
 			x  = xlate(sp_a1, m2.r.smode, (m2.r.mem != M_LD),
-			           fc_tt(m2.r.fc) == TT_ALT, atc_hit, atc_e,
+			           fc_tt(m2.r.fc) == TT_ALT, atc_hit_q, atc_e_q,
 			           tq_a[0], tq_a[1], tq_a[2], tq_a[3], lve_q);
 			// the second part's translation and lookup, registered (the
 			// decision and the data next cycle; the RAM keeps reading the
@@ -2441,7 +2469,7 @@ always_ff @(posedge clk) begin
 		default: e_st <= E_IDLE;
 		endcase
 
-		if ((e_st == E_SP_W || e_st == E_SP_2) && dw && dw_set == st_set) sp_dw <= 1'b1;
+		if ((e_st == E_SP_W || e_st == E_SP_W2 || e_st == E_SP_2) && dw && dw_set == st_set) sp_dw <= 1'b1;
 
 		if (kill_now) begin
 			// a kill comes with the WB uop leaving (or WB empty): every
@@ -2451,7 +2479,12 @@ always_ff @(posedge clk) begin
 			m3.r.v <= 1'b0;
 			m4.r.v <= 1'b0;
 			e_dc2_done <= 1'b0;
-			if (e_st != E_IDLE) e_kill <= 1'b1;
+			// (also from E_IDLE: a job scheduled this same cycle -- the
+			// schedule does not wait on kill_now, a long path through WB --
+			// starts marked dead and ends without e_dc2_done; the mark is
+			// otherwise read only by the DC2 job states, and cleared as the
+			// next job is scheduled)
+			e_kill <= 1'b1;
 			if (e_st == E_IDLE) e_job <= 1'b0;
 		end
 
