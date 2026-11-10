@@ -599,13 +599,11 @@ function automatic xres_t xlate(input logic [31:0] la, input logic s, input logi
                                 input logic hitv, input atce_t e,
                                 input logic [21:0] t0, input logic [21:0] t1,
                                 input logic [21:0] t2, input logic [21:0] t3,
-                                input logic [3:0] valid);
+                                input logic [3:0] valid,
+                                input logic tt0, input logic tt1);   // la's DTT0/1 matches
 	xres_t x;
-	logic tt0, tt1;
 	logic [21:0] tg;
 	x = '0;
-	tt0 = ttr_hit(dtt0, la, s);
-	tt1 = ttr_hit(dtt1, la, s);
 	// (MOVES to an alternate address space, SFC/DFC 0, 3, 4, 7: MC68040UM
 	// 3.2.5 calls it a physical access without translation; WinUAE -- the
 	// cputest oracle, and the reference this core is validated against --
@@ -658,7 +656,8 @@ logic       d1_hit;
 logic [1:0] d1_way;
 xres_t      x_dc1r;            // xlate's own result for DC1
 always_comb x_dc1r = xlate(m1.a, m1.smode, m1_wr, fc_tt(m1.fc) == TT_ALT, atc_hit, atc_e,
-                          tq_a[0], tq_a[1], tq_a[2], tq_a[3], lvd_q);
+                          tq_a[0], tq_a[1], tq_a[2], tq_a[3], lvd_q,
+                          ttr_hit(dtt0, m1.a, m1.smode), ttr_hit(dtt1, m1.a, m1.smode));
 logic [3:0] d1_mj;            // the matching way, one-hot (for the line select)
 // whether DC1's address is used untranslated (alternate space, a TTR,
 // translation off, CPU space): registered with the address, and again
@@ -710,7 +709,8 @@ logic sim_kchk = 1'b0;        // a job completed for a discarded uop (E_S_DONE)
 always_ff @(posedge clk) begin
 	xres_t xo;
 	xo = xlate(m1.a, m1.smode, m1_wr, fc_tt(m1.fc) == TT_ALT, atc_hit, atc_e,
-	           tq_a[0], tq_a[1], tq_a[2], tq_a[3], lvd_q);
+	           tq_a[0], tq_a[1], tq_a[2], tq_a[3], lvd_q,
+	           ttr_hit(dtt0, m1.a, m1.smode), ttr_hit(dtt1, m1.a, m1.smode));
 	// (while the engine steals the ATC's main port, xlate sees its address,
 	// not DC1's: DC1 waits then)
 	if (nreset && !steal && m1.ack == 2'd0 && m1.v && !m1_stale &&
@@ -974,6 +974,26 @@ endfunction
 // engine holds DC2's record: the increment stays off the translation)
 logic [31:0] sp_a1;
 always_ff @(posedge clk) sp_a1 <= {m2.r.a[31:4] + 28'd1, 4'd0};
+// The engine's DTT0/1 matches, registered: of the split's second line
+// (E_SP_2) and of the current part (E_S_XL2).  The TTRs change only at a
+// MOVEC's commit, and both addresses (and DC2's S) are held from the
+// state before the one that uses them, so the registered match is the
+// live one there (checked below); the compare stays off the translation.
+logic [1:0] sp_tt_q, ev_tt_q;
+always_ff @(posedge clk) begin
+	sp_tt_q <= {ttr_hit(dtt1, sp_a1, m2.r.smode), ttr_hit(dtt0, sp_a1, m2.r.smode)};
+	ev_tt_q <= {ttr_hit(dtt1, e_va,  m2.r.smode), ttr_hit(dtt0, e_va,  m2.r.smode)};
+end
+// synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && ((e_st == E_SP_2 &&
+	                sp_tt_q != {ttr_hit(dtt1, sp_a1, m2.r.smode), ttr_hit(dtt0, sp_a1, m2.r.smode)}) ||
+	               (e_st == E_S_XL2 &&
+	                ev_tt_q != {ttr_hit(dtt1, e_va, m2.r.smode), ttr_hit(dtt0, e_va, m2.r.smode)}))) begin
+		$display("FAIL: dmu: registered TTR match is stale in %s", e_st.name());
+		$finish;
+	end
+// synthesis translate_on
 // synthesis translate_off
 always_ff @(posedge clk)
 	if (nreset && e_st == E_SP_2 && sp_a1 != {m2.r.a[31:4] + 28'd1, 4'd0})
@@ -1463,7 +1483,7 @@ always_ff @(posedge clk) begin
 			xres_t x;
 			x  = xlate(sp_a1, m2.r.smode, (m2.r.mem != M_LD),
 			           fc_tt(m2.r.fc) == TT_ALT, atc_hit_q, atc_e_q,
-			           tq_a[0], tq_a[1], tq_a[2], tq_a[3], lve_q);
+			           tq_a[0], tq_a[1], tq_a[2], tq_a[3], lve_q, sp_tt_q[0], sp_tt_q[1]);
 			// the second part's translation and lookup, registered (the
 			// decision and the data next cycle; the RAM keeps reading the
 			// stolen set, the line multiplexer its way)
@@ -1486,7 +1506,8 @@ always_ff @(posedge clk) begin
 			// (after a search: the ATC holds its result, a nonresident
 			// entry for a failed one)
 			x = xlate(e_va, m2.r.smode, (m2.r.mem != M_LD), fc_tt(m2.r.fc) == TT_ALT,
-			          atc_hit, atc_e, tq_a[0], tq_a[1], tq_a[2], tq_a[3], lve_q);
+			          atc_hit, atc_e, tq_a[0], tq_a[1], tq_a[2], tq_a[3], lve_q,
+			          ev_tt_q[0], ev_tt_q[1]);
 			if (m2.r.ack != 2'd0) begin
 				x    = '0;
 				x.ok = 1'b1;

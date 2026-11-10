@@ -689,7 +689,11 @@ always_comb begin
 			lp_ovr  = lp_br && lp_exit;
 			if (lp_ovr) nredir = 1'b0;
 		end
-		else if ((a0.rt == UA_JSR || a0.rt == UA_JMP) && go && !go_part &&
+		// (no go term: a record that is not produced this clock pushes
+		// nothing and writes no part, and a JSR/JMP with this EA is never
+		// a first part -- checked below; the go was the long path into
+		// the target)
+		else if ((a0.rt == UA_JSR || a0.rt == UA_JMP) &&
 		         (nrec.ea0.m == EM_ABSW || nrec.ea0.m == EM_ABSL || nrec.ea0.m == EM_PC16)) begin
 			ntarget = nrec.ea0.bd;
 			teq     = (nrec.ea0.m == EM_ABSL) ? ({win[1], win[2]} == bt_tgt) :
@@ -736,6 +740,15 @@ always_comb begin
 		nrec.pred   = nredir && (nrec.exc == 8'd0) && pd0.legal;
 	end
 end
+
+// synthesis translate_off
+always_ff @(posedge clk)
+	if (nreset && ph == PH_IDLE && go_part && (a0.rt == UA_JSR || a0.rt == UA_JMP) &&
+	    (nrec.ea0.m == EM_ABSW || nrec.ea0.m == EM_ABSL || nrec.ea0.m == EM_PC16)) begin
+		$display("FAIL: decode: a JSR/JMP with a known target is a first part at %h", qpc);
+		$finish;
+	end
+// synthesis translate_on
 
 // the FIFO has room when it holds at most one record (registered)
 // Words the fetch BTB flagged (the end of a branch it took).  A flag on
@@ -878,6 +891,25 @@ end
 
 assign consume = fire ? use_n[2:0] : 3'd0;
 
+// synthesis translate_off
+// the record FIFO as it was written with push as the enable: the queued
+// records must match it
+dinst_t sh_rq0, sh_rq1;
+always_ff @(posedge clk) begin
+	if (nreset && !flush && $past(nreset) &&
+	    ((rq_n != 2'd0 && rq0 != sh_rq0) || (rq_n == 2'd2 && rq1 != sh_rq1))) begin
+		$display("FAIL: decode: record FIFO (%0d queued) differs from the push-enabled one", rq_n);
+		$finish;
+	end
+	case ({push, pop})
+		2'b01: sh_rq0 <= sh_rq1;
+		2'b10: if (rq_n == 2'd0) sh_rq0 <= nrec_q; else sh_rq1 <= nrec_q;
+		2'b11: if (rq_n == 2'd1) sh_rq0 <= nrec_q; else begin sh_rq0 <= sh_rq1; sh_rq1 <= nrec_q; end
+		default: ;
+	endcase
+end
+// synthesis translate_on
+
 always_ff @(posedge clk) begin
 	if (!nreset) begin
 		rq_n       <= 2'd0;
@@ -944,18 +976,22 @@ always_ff @(posedge clk) begin
 			end
 		end
 
-		// two records
+		// two records.  The slot a push would fill is written every clock,
+		// push or not (a free slot's contents are unused), so the record
+		// registers' enables come from the count and the pop, not from
+		// D1's go (the timing path: qw, the decode, fire, then every bit of
+		// both records); the push only moves the count
+		case (rq_n)
+			2'd0: rq0 <= nrec_q;
+			2'd1: begin
+				rq1 <= nrec_q;
+				if (pop) rq0 <= nrec_q;      // (rq1 leaves; a push lands here)
+			end
+			default: if (pop) begin rq0 <= rq1; rq1 <= nrec_q; end
+		endcase
 		case ({push, pop})
-			2'b01: begin rq0 <= rq1; rq_n <= rq_n - 2'd1; end
-			2'b10: begin
-				if (rq_n == 2'd0) rq0 <= nrec_q;
-				else              rq1 <= nrec_q;
-				rq_n <= rq_n + 2'd1;
-			end
-			2'b11: begin
-				if (rq_n == 2'd1) rq0 <= nrec_q;
-				else begin rq0 <= rq1; rq1 <= nrec_q; end
-			end
+			2'b01: rq_n <= rq_n - 2'd1;
+			2'b10: rq_n <= rq_n + 2'd1;
 			default: ;
 		endcase
 
