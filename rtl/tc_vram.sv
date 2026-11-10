@@ -333,6 +333,14 @@ initial begin
 	DDRAM_BURSTCNT = 8'd1;
 end
 
+// synthesis translate_off
+always @(posedge clk_ram)
+	if (!ddr_hold && e_state == E_CPU_RD && DDRAM_DOUT_READY && e_beat &&
+	    DDRAM_ADDR[17:1] != c_addr[20:4]) begin
+		$display("FAIL: tc_vram: DDRAM_ADDR %h no longer holds the read's line %h", DDRAM_ADDR, c_addr[20:4]);
+		$finish;
+	end
+// synthesis translate_on
 always @(posedge clk_ram) begin
 	lb_we <= 0;
 	if (!DDRAM_BUSY) begin
@@ -452,7 +460,13 @@ always @(posedge clk_ram) begin
 		else begin
 			line[63:0] <= {bswap(DDRAM_DOUT[31:0]), bswap(DDRAM_DOUT[63:32])};
 			if (e_want[1]) r_rdata <= e_want[0] ? bswap(DDRAM_DOUT[63:32]) : bswap(DDRAM_DOUT[31:0]);
-			line_tag   <= c_addr[20:4];
+			// the line's address from DDRAM_ADDR (loaded from c_addr when
+			// the read was issued, untouched until E_IDLE), not c_addr
+			// itself: that copy was a bare clk_sys -> clk_ram register
+			// path, the shortest crossing in the core, and failed hold on
+			// some placements (the copy was safe -- c_addr is held while
+			// c_busy -- but the analysis cannot know it)
+			line_tag   <= DDRAM_ADDR[17:1];
 			line_valid <= 1;
 			r_done_t   <= ~r_done_t;
 			e_state    <= E_IDLE;
