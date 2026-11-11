@@ -16,7 +16,7 @@ set_clock_groups -asynchronous -group [get_clocks {emu|pllv|*|divclk}]
 set_false_path -to [get_keepers {*_meta*}]
 
 # ----------------------------------------------------------------------------
-# The AP68040 on clk_cpu (66 MHz, 2 x clk_sys, same PLL, aligned edges).
+# The AP68040 on clk_cpu (60 MHz, 2 x clk_sys, same PLL, aligned edges).
 # rtl/next_ap68040.sv runs the core's bus, its transfer FSM, the store buffer
 # and the snoop presenter on clk_cpu under bclk_en, which is high only in the
 # clk_cpu cycles that end on a clk_sys edge.  Every register that talks to
