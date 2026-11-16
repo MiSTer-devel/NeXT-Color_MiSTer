@@ -154,8 +154,12 @@ module dsp56k_core (
     reg [15:0] la /*verilator public_flat_rw*/;
     reg [23:0] lc /*verilator public_flat_rw*/;
     reg [23:0] lcsave /*verilator public_flat_rw*/;
+`ifdef VERILATOR
+    // simulation shadow of the hardware stack: tb_diff compares it with
+    // Previous, and every clock checks it against dsp56k_stk (u_stk)
     reg [15:0] stk_h [0:15] /*verilator public_flat_rw*/;
     reg [15:0] stk_l [0:15] /*verilator public_flat_rw*/;
+`endif
     reg [15:0] pc /*verilator public_flat_rw*/;
     reg        loop_rep /*verilator public_flat_rw*/, pc_on_rep /*verilator public_flat_rw*/;
     reg  [1:0] int_state /*verilator public_flat_rw*/;
@@ -175,8 +179,12 @@ module dsp56k_core (
     reg [23:0] ir_q, ew_q;
     reg        fa_ext, fb_ext;       // fetch source of opcode / next word
 
-    wire [15:0] ssh_cur = stk_h[sp[3:0]];
-    wire [15:0] ssl_cur = stk_l[sp[3:0]];
+    // hardware stack reads (u_stk, LUT RAM): port 0 the SP entry, port 1
+    // SP - 1 (ENDDO), ports 2 and 3 the DO-loop-end entries of the last clock
+    reg   [3:0] stk_ki;
+    wire [63:0] stk_qh, stk_ql;
+    wire [15:0] ssh_cur = stk_qh[15:0];
+    wire [15:0] ssl_cur = stk_ql[15:0];
     wire [55:0] acc_a = {a2, a1, a0};
     wire [55:0] acc_b = {b2, b1, b0};
     wire        de = omr[2];
@@ -892,6 +900,14 @@ module dsp56k_core (
     wire        sval_q_bit = sval_q32[ir_q[4:0]];
     wire  [3:0] sp_m1 = sp[3:0] - 4'd1;
 
+    dsp56k_stk u_stk (
+        .clk(clk), .rst(rst), .we(el),
+        .wa_h(wa_h), .wa_l(wa_l), .wa_i(wa_i), .wa_hv(wa_hv), .wa_lv(wa_lv),
+        .wb_h(wb_h), .wb_i(wb_i), .wb_hv(wb_hv), .wb_lv(wb_lv),
+        .wc_h(wc_h), .wc_i(wc_i), .wc_hv(wc_hv), .wc_lv(wc_lv),
+        .ra({stk_ki - 4'd1, stk_ki, sp_m1, sp[3:0]}),
+        .qh(stk_qh), .ql(stk_ql));
+
     integer i;
     always @* begin
         reg        w_en, w_agu;          // the dsp_write_reg port
@@ -1205,7 +1221,7 @@ module dsp56k_core (
             if (ir_q == 24'h00000c) jtgt = ssh_cur;                                // rts
             if (ir_q == 24'h00008c) begin                                          // enddo
                 n_sr = (n_sr & 16'h007f) | (ssl_cur & 16'h8000);
-                n_la = stk_h[sp_m1]; n_lc = {8'd0, stk_l[sp_m1]};
+                n_la = stk_qh[31:16]; n_lc = {8'd0, stk_ql[31:16]};
             end
         end
         // dsp_write_reg
@@ -1307,17 +1323,18 @@ module dsp56k_core (
         n_pc = seq_pc; n_pc1 = seq_pc1;
         // DO loop end
         ki = n_sp[3:0];
+        stk_ki = ki;
         rdv = stk_rd(ki, wa_h, wa_l, wa_i, wa_hv, wa_lv, wb_h, wb_i, wb_hv, wb_lv,
-                     stk_h[ki], stk_l[ki]);
+                     stk_qh[47:32], stk_ql[47:32]);
         do_hit = n_sr[15] && ({1'b0, seq_pc} == {1'b0, n_la} + 17'd1);
         do_back = 1'b0;
         if (do_hit) begin
             if (lc_eq1) begin
                 t7 = sp_pop(n_sp); n_sp = t7[5:0]; if (t7[6]) n_st_stkerr = 1'b1;
                 n_sr = (n_sr & 16'h7fff) | (rdv[15:0] & 16'h8000);
-                ki = n_sp[3:0];
+                ki = n_sp[3:0];   // = stk_ki - 1 (sp_pop wraps 0 to 15): port 3
                 rdv = stk_rd(ki, wa_h, wa_l, wa_i, wa_hv, wa_lv, wb_h, wb_i, wb_hv, wb_lv,
-                             stk_h[ki], stk_l[ki]);
+                             stk_qh[63:48], stk_ql[63:48]);
                 t7 = sp_pop(n_sp); n_sp = t7[5:0]; if (t7[6]) n_st_stkerr = 1'b1;
                 n_la = rdv[31:16]; n_lc = {8'd0, rdv[15:0]};
             end else begin
@@ -1522,7 +1539,9 @@ module dsp56k_core (
             x0 <= 24'd0; x1 <= 24'd0; y0 <= 24'd0; y1 <= 24'd0;
             a0 <= 24'd0; a1 <= 24'd0; a2 <= 8'd0; b0 <= 24'd0; b1 <= 24'd0; b2 <= 8'd0;
             for (i = 0; i < 8; i = i + 1) begin rr[i] <= 16'd0; nn[i] <= 16'd0; mm[i] <= 16'hffff; end
+`ifdef VERILATOR
             for (i = 0; i < 16; i = i + 1) begin stk_h[i] <= 16'd0; stk_l[i] <= 16'd0; end
+`endif
             sr <= 16'd0; omr <= 8'h02; sp <= 6'd0; la <= 16'd0; lc <= 24'd0; lcsave <= 24'd0;
             pc <= 16'd0;
             loop_rep <= 1'b0; pc_on_rep <= 1'b0;
@@ -1602,10 +1621,12 @@ module dsp56k_core (
                         x0 <= n_x0; x1 <= n_x1; y0 <= n_y0; y1 <= n_y1;
                         a0 <= n_a0; a1 <= n_a1; a2 <= n_a2; b0 <= n_b0; b1 <= n_b1; b2 <= n_b2;
                         for (i = 0; i < 8; i = i + 1) begin rr[i] <= n_rr[i]; nn[i] <= n_nn[i]; mm[i] <= n_mm[i]; end
+`ifdef VERILATOR
                         if (wa_h) stk_h[wa_i] <= wa_hv;
                         if (wa_l) stk_l[wa_i] <= wa_lv;
                         if (wb_h) begin stk_h[wb_i] <= wb_hv; stk_l[wb_i] <= wb_lv; end
                         if (wc_h) begin stk_h[wc_i] <= wc_hv; stk_l[wc_i] <= wc_lv; end
+`endif
                         sr <= n_sr; omr <= n_omr; sp <= n_sp; la <= n_la; lc <= n_lc; lcsave <= n_lcsave;
                         pc <= n_pc;
                         loop_rep <= n_loop_rep; pc_on_rep <= n_pc_on_rep;
@@ -1627,4 +1648,19 @@ module dsp56k_core (
             if (irqb) st_irqb <= 1'b1;              // a new request wins over the take
         end
     end
+`ifdef VERILATOR
+    // u_stk must read exactly what the register stack (shadow) holds
+    always @(posedge clk) begin
+        if (!rst) begin
+            if (stk_qh[15:0]  != stk_h[sp[3:0]]    || stk_ql[15:0]  != stk_l[sp[3:0]] ||
+                stk_qh[31:16] != stk_h[sp_m1]      || stk_ql[31:16] != stk_l[sp_m1] ||
+                (el && (stk_qh[47:32] != stk_h[stk_ki] || stk_ql[47:32] != stk_l[stk_ki] ||
+                        stk_qh[63:48] != stk_h[stk_ki - 4'd1] || stk_ql[63:48] != stk_l[stk_ki - 4'd1]))) begin
+                $display("dsp56k_core: u_stk differs from the stack shadow (sp %0d ki %0d)", sp, stk_ki);
+                $fatal(1);
+            end
+        end
+    end
+`endif
+
 endmodule
