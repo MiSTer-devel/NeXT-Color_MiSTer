@@ -1584,6 +1584,11 @@ always_ff @(posedge clk) begin
 	cm_wr  = 1'b0;
 	cm_rst = 1'b0;
 	redir_v <= 1'b0;
+	// redir_pc is read only with the redir_v pulse: it takes EX's next PC
+	// every cycle (the early redirect's value), so the late early-redirect
+	// decision gates only redir_v; WB's and exception entry's loads below
+	// take precedence (timing)
+	redir_pc <= ex_next;
 	ras_rv  <= 1'b0;
 	exc_go  <= 1'b0;
 	flush   <= 1'b0;
@@ -1825,7 +1830,6 @@ always_ff @(posedge clk) begin
 			if (ex_early) begin
 				fe_flush    <= 1'b1;
 				redir_v     <= 1'b1;
-				redir_pc    <= ex_next;
 				ras_rv      <= ex_u.ras.v;
 				eredir_pend <= 1'b1;
 			end

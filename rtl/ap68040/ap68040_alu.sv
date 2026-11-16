@@ -135,7 +135,7 @@ wire        sum_v  = is_sub ? ((l_msb != r_msb) && (sum_n != l_msb))
 //--------------------------------------------------------------------------
 wire  [4:0] bitn     = (sz == SZ_B) ? {2'b00, a[2:0]} : a[4:0];
 wire [31:0] bit_mask = 32'd1 << bitn;
-wire        bit_set  = |(b & bit_mask);
+wire        bit_set  = b[bitn];                  // (= |(b & bit_mask): a select, off the shifter)
 
 //--------------------------------------------------------------------------
 // CHK (b = Dn, a = upper bound), sized W or L, signed
