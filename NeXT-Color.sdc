@@ -24,14 +24,25 @@ set_false_path -to [get_keepers {*_meta*}]
 # edges: the paths between the two clocks are a full clk_sys period, two
 # clk_cpu cycles.  The exception is the bclk_en phase detector, whose
 # clk_sys -> clk_cpu paths are single-cycle by design.
-# derive_pll_clocks names the clocks by PLL counter, so find them by period.
+# derive_pll_clocks names the clocks by PLL counter, so find them by period:
+# the main PLL's pair whose periods are exactly 2:1 (clk_ram is 3 x clk_sys).
+# (This used to match 17.544/35.088 ns, i.e. 57/28.5 MHz only, so on the
+# 66/33 MHz builds the multicycles below were silently dropped.)
 # ----------------------------------------------------------------------------
 set ntc_cpu_clk ""
 set ntc_sys_clk ""
 foreach_in_collection c [get_clocks {emu|pll|*divclk}] {
-	set p [get_clock_info -period $c]
-	if {abs($p - 17.544) < 0.05} { set ntc_cpu_clk [get_clock_info -name $c] }
-	if {abs($p - 35.088) < 0.05} { set ntc_sys_clk [get_clock_info -name $c] }
+	set pc [get_clock_info -period $c]
+	foreach_in_collection s [get_clocks {emu|pll|*divclk}] {
+		set ps [get_clock_info -period $s]
+		if {abs($ps - 2.0 * $pc) < 0.05} {
+			set ntc_cpu_clk [get_clock_info -name $c]
+			set ntc_sys_clk [get_clock_info -name $s]
+		}
+	}
+}
+if {$ntc_cpu_clk ne ""} {
+	post_message -type info "NeXT-Color.sdc: clk_cpu = $ntc_cpu_clk, clk_sys = $ntc_sys_clk"
 }
 if {$ntc_cpu_clk ne "" && $ntc_sys_clk ne ""} {
 	set_multicycle_path -from [get_clocks $ntc_cpu_clk] -to [get_clocks $ntc_sys_clk] -setup -start 2
