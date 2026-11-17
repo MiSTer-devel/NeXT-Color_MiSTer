@@ -712,8 +712,12 @@ always_ff @(posedge clk) begin
 	           tq_a[0], tq_a[1], tq_a[2], tq_a[3], lvd_q,
 	           ttr_hit(dtt0, m1.a, m1.smode), ttr_hit(dtt1, m1.a, m1.smode));
 	// (while the engine steals the ATC's main port, xlate sees its address,
-	// not DC1's: DC1 waits then)
-	if (nreset && !steal && m1.ack == 2'd0 && m1.v && !m1_stale &&
+	// not DC1's: DC1 waits then.  The same the cycle after a steal: the main
+	// port's set and page are registered (atc_set_q, atc_la_q), so its
+	// search still answers for the stolen address -- xlate disagrees with
+	// DC1's own port then, but dm_hold1 holds DC1 on steal_q and the lookup
+	// is not used)
+	if (nreset && !steal && !steal_q && m1.ack == 2'd0 && m1.v && !m1_stale &&
 	    (xo.hit != x_dc1.hit || (xo.hit && xo.way != x_dc1.way)))
 	begin
 		$display("FAIL: DMU: the parallel tag compare says hit=%b way=%0d, xlate hit=%b way=%0d",
