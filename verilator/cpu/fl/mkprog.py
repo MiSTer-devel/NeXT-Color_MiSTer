@@ -30,6 +30,13 @@ NF = 8
 # mismatch writes the bench's FAIL mailbox
 COPY = os.environ.get('COPYTEST', '0') == '1'
 CLONGS = int(os.environ.get('COPYLONGS', '256'))   # longs per copy (4096: 16 KB, past the 4 KB cache)
+# COPYDIRTY=1 (with COPYTEST): then complement DST in place (store hits:
+# dirty lines, pushed as later fills evict them) with a posted store of each
+# long to DST4 in between, so a push often finds the store buffer in use
+# (next_ap68040's line write burst waits for room), then CPUSHA DC (pushes
+# back to back: the burst waits on a full buffer); both are compared
+DIRTY = os.environ.get('COPYDIRTY', '0') == '1'
+DST4 = 0x04070000
 SRC = 0x04050000
 DST = 0x04060000
 DST2 = 0x04064000
@@ -235,6 +242,24 @@ if COPY:
     w(0xB308)                                           # cmpm.b (a0)+,(a1)+
     bra16(0x56C9, 'ct_vb')
     bra16(0x6600, 'ct_fail')
+    if DIRTY:
+        movea_imm_a(DST, 1); movea_imm_a(DST4, 2); movel_imm_d(CLONGS - 1, 1)
+        lab('ct_dm')
+        w(0x2011)                                       # move.l (a1),d0
+        w(0x4680)                                       # not.l d0
+        w(0x22C0)                                       # move.l d0,(a1)+
+        w(0x24C0)                                       # move.l d0,(a2)+
+        bra16(0x51C9, 'ct_dm')
+        w(0xF478)                                       # cpusha dc: the dirty lines pushed back to back
+        movea_imm_a(SRC, 0); movea_imm_a(DST, 1); movea_imm_a(DST4, 2); movel_imm_d(CLONGS - 1, 1)
+        lab('ct_dv')
+        w(0x2018)                                       # move.l (a0)+,d0
+        w(0x4680)                                       # not.l d0
+        w(0xB099)                                       # cmp.l (a1)+,d0
+        bra16(0x6600, 'ct_fail')
+        w(0xB09A)                                       # cmp.l (a2)+,d0
+        bra16(0x6600, 'ct_fail')
+        bra16(0x51C9, 'ct_dv')
     # a store and a load of the same line straight after (no allocate)
     movel_d_abs(7, DST3 + 4)
     movel_abs_d(DST3 + 4, 0)

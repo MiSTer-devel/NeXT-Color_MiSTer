@@ -43,6 +43,18 @@
 //  fill_stb/fill_line report each line read the core starts: the flushed
 //  line may be cached again.
 //
+//  LINE_BURST = 1 (bcopy plan phase 3): a line read's first beat goes out
+//  as above (critical word first, through the store buffer); then, with the
+//  store buffer empty, the module waits (C_LW) for the machine's kept line
+//  of that address (lb_ok: tc_machine's SDRAM-bridge line or tc_vram's line)
+//  and gives the other three beats from a copy of it on consecutive bus
+//  clocks (C_LB), instead of three ~2-clock round trips.  When the line is
+//  not kept (lb_ok and lb_wait low) the beats go out one by one as before.
+//  A posted line write (a push) takes its four beats on consecutive clocks
+//  (C_WB): TA is asserted for a clock only when the store buffer will have
+//  a slot in it (room_next), and the beat the core drives with that TA is
+//  pushed in the same clock.
+//
 //  SNOOP = 0: no snooping (DMA coherency is the drivers').
 //
 //  ce must be 1.
@@ -67,7 +79,9 @@ module next_ap68040
 	parameter [7:0]  NA_PG_LO     = 8'h04,         // physical [31:24] in [NA_PG_LO, NA_PG_HI): a copyback
 	parameter [7:0]  NA_PG_HI     = 8'h0C,         //   store miss is not allocated (RAM, $04-$0B)
 	parameter [31:0] POST_LO      = 32'h0400_0000, // posted stores [POST_LO, POST_HI):
-	parameter [31:0] POST_HI      = 32'h0D00_0000  //   NeXT RAM + VRAM
+	parameter [31:0] POST_HI      = 32'h0D00_0000, //   NeXT RAM + VRAM
+	parameter        LINE_BURST   = 1              // line beats 2-4 of a read from lb_data, and a posted
+	                                               //   line write's beats, on consecutive bus clocks
 )
 (
 	input         clk,            // the machine clock (tc_machine's side of every port)
@@ -87,6 +101,13 @@ module next_ap68040
 	output  [2:0] bus_fc,
 	input         bus_ack,
 	input  [31:0] bus_rdata,      // right-aligned by size
+
+	// the machine's kept line, for bus_addr's line (LINE_BURST; looked at
+	// only with bus_req low and the store buffer empty, so bus_addr is this
+	// module's address)
+	input         lb_ok,          // lb_data is the line, coherent with memory
+	input         lb_wait,        // the line is being read (or the bus is busy): ask again
+	input [127:0] lb_data,        // [127:96] the long word at A3-A2 = 0
 
 	// DMA write snoop
 	input         snoop_stb,
@@ -209,7 +230,10 @@ assign debug_halted = dbg_halted;
 //----------------------------------------------------------------------------
 // the 68040's transfers -> transactions
 //----------------------------------------------------------------------------
-localparam [2:0] C_IDLE = 3'd0, C_REQ = 3'd1, C_TA = 3'd2;
+localparam [2:0] C_IDLE = 3'd0, C_REQ = 3'd1, C_TA = 3'd2,
+                 C_LW = 3'd3,   // a line read: wait for the kept line (LINE_BURST)
+                 C_LB = 3'd4,   // a line read: beats from lq, one per clock
+                 C_WB = 3'd5;   // a posted line write: a beat per clock with room
 reg   [2:0] cst;
 reg  [31:0] xa;                // the transfer (TS to its last TA)
 reg   [1:0] xsiz;
@@ -217,6 +241,16 @@ reg         xrd, xcode;
 reg   [2:0] xfc;
 reg   [1:0] beat;              // line beats done
 reg         xlast;             // the beat whose TA is out ends the transfer
+reg         xpost;             // xa is in [POST_LO, POST_HI)
+reg [127:0] lq;                // C_LB: the kept line
+reg         wb_cap;            // C_WB: the TA out this clock takes beat `beat` off D
+wire        sb_room_next;
+
+function [31:0] line_lw;       // a line's long word at A3-A2 = i
+	input [127:0] l;
+	input   [1:0] i;
+	line_lw = l[127 - 32 * i -: 32];
+endfunction
 
 wire        x_line = (xsiz == SIZ_LINE);
 wire  [1:0] lw     = xa[3:2] + beat;     // a line's beats wrap from A3-A2
@@ -232,12 +266,15 @@ wire        c_berr = berr;
 // drives it (A, SIZ, TM and the first long word of D are valid with TS):
 // the buffer takes it and acknowledges in that clock, and TA follows at
 // once (zero wait states).  With the buffer full it waits in C_REQ.
-wire        ts_post = (cst == C_IDLE) && !ts_n && !rw_n && (tt != 2'd3) &&
-                      (a_o >= POST_LO) && (a_o < POST_HI);
+wire        a_post  = (a_o >= POST_LO) && (a_o < POST_HI);
+wire        ts_post = (cst == C_IDLE) && !ts_n && !rw_n && (tt != 2'd3) && a_post;
 wire  [1:0] p_siz   = ts_post ? siz  : xsiz;
 wire [31:0] p_a     = ts_post ? a_o  : xa;
+// C_WB: the beat on D with this clock's TA goes into the buffer (room for
+// it was checked when the TA was decided)
+wire        wb_push = (cst == C_WB) && wb_cap && !ta_n;
 
-assign c_req   = (cst == C_REQ) || ts_post;
+assign c_req   = (cst == C_REQ) || ts_post || wb_push;
 assign c_write = ts_post || !xrd;
 assign c_instr = ts_post ? 1'b0 : xcode;
 assign c_fc    = ts_post ? tm_fc(tt, tm) : xfc;
@@ -280,6 +317,9 @@ always @(posedge pclk) if (bclk_en) begin
 		xfc    <= 3'd0;
 		beat   <= 2'd0;
 		xlast  <= 1'b0;
+		xpost  <= 1'b0;
+		lq     <= 128'd0;
+		wb_cap <= 1'b0;
 		fill_stb  <= 1'b0;
 		fill_line <= 0;
 	end
@@ -298,6 +338,7 @@ always @(posedge pclk) if (bclk_en) begin
 					xrd   <= rw_n;
 					xcode <= (tt != 2'd2) && (tm == 3'd2 || tm == 3'd6);
 					xfc   <= tm_fc(tt, tm);
+					xpost <= a_post;
 					beat  <= 2'd0;
 					if (tt == 2'd3) begin
 						// CPU space: an interrupt acknowledge autovectors,
@@ -313,10 +354,11 @@ always @(posedge pclk) if (bclk_en) begin
 					end
 					else if (ts_post && c_ack) begin
 						// posted: the buffer has it, TA now
-						ta_n  <= 1'b0;
-						beat  <= 2'd1;
-						xlast <= (siz != SIZ_LINE);
-						cst   <= C_TA;
+						ta_n   <= 1'b0;
+						beat   <= 2'd1;
+						xlast  <= (siz != SIZ_LINE);
+						wb_cap <= 1'b0;
+						cst    <= (LINE_BURST && siz == SIZ_LINE) ? C_WB : C_TA;
 					end
 					else cst <= C_REQ;
 				end
@@ -333,15 +375,54 @@ always @(posedge pclk) if (bclk_en) begin
 					beat  <= beat + 2'd1;
 					xlast <= !x_line || beat == 2'd3;
 					// a read line keeps the request up, the next beat's
-					// address follows the ack; a write line waits for the
-					// next beat's data (the clock after this TA)
-					if (xrd && x_line && beat != 2'd3) cst <= C_REQ;
+					// address follows the ack (LINE_BURST, RAM/VRAM: after
+					// the first beat, the rest from the kept line); a
+					// write line waits for the next beat's data (the clock
+					// after this TA)
+					wb_cap <= 1'b0;
+					if (xrd && x_line && beat != 2'd3)
+						cst <= (LINE_BURST && xpost && beat == 2'd0) ? C_LW : C_REQ;
+					else if (LINE_BURST && !xrd && x_line && xpost && beat != 2'd3)
+						cst <= C_WB;
 					else cst <= C_TA;
 				end
 			C_TA:
 				// TA/TEA is out this clock; the core drives a write line's
 				// next beat on D31-D0 from the next
 				cst <= xlast ? C_IDLE : C_REQ;
+			C_LW:
+				// bus_req is low and, with the buffer empty, bus_addr is
+				// this line's: the kept line gives the next beat now and
+				// the rest on the following clocks
+				if (!sb_pending && lb_ok) begin
+					lq    <= lb_data;
+					ta_n  <= 1'b0;
+					d_i   <= line_lw(lb_data, lw);
+					beat  <= beat + 2'd1;
+					xlast <= (beat == 2'd3);
+					cst   <= (beat == 2'd3) ? C_TA : C_LB;
+				end
+				else if (!sb_pending && lb_wait) ;
+				else cst <= C_REQ;            // not kept: beat by beat
+			C_LB: begin
+				ta_n  <= 1'b0;
+				d_i   <= line_lw(lq, lw);
+				beat  <= beat + 2'd1;
+				xlast <= (beat == 2'd3);
+				if (beat == 2'd3) cst <= C_TA;
+			end
+			C_WB:
+				// a TA is out (!ta_n) for the previous beat (wb_cap low) or
+				// for the beat on D now, which wb_push hands to the buffer;
+				// the next TA only when the buffer will have a slot
+				if (!ta_n && wb_cap && beat == 2'd3) cst <= C_IDLE;
+				else begin
+					if (!ta_n) begin
+						if (wb_cap) beat <= beat + 2'd1;
+						wb_cap <= 1'b1;
+					end
+					ta_n <= !sb_room_next;
+				end
 			default: cst <= C_IDLE;
 		endcase
 	end
@@ -382,7 +463,8 @@ wombat_store_buffer #(.ENABLE(1), .POST_LO(POST_LO), .POST_HI(POST_HI)) store_bu
 	.m_ack(bus_ack),
 	.m_rdata(bus_rdata),
 	.m_err(berr),
-	.pending(sb_pending)
+	.pending(sb_pending),
+	.room_next(sb_room_next)
 );
 
 //----------------------------------------------------------------------------
@@ -758,7 +840,7 @@ always @(posedge pclk) if (bclk_en && nrst_q) begin
 		                             : (rw_n ? 5'd10 : 5'd20)) + pf_reg(a_o[31:24]);
 	end
 	else if (pf_cur != 0) begin
-		if (cst == C_TA && xlast) begin
+		if ((cst == C_TA && xlast) || (cst == C_WB && !ta_n && wb_cap && beat == 2'd3)) begin
 			pf_n[pf_k] <= pf_n[pf_k] + 1;
 			pf_t[pf_k] <= pf_t[pf_k] + pf_cur + 1;
 			if (pf_cur + 1 > pf_max[pf_k]) pf_max[pf_k] <= pf_cur + 1;

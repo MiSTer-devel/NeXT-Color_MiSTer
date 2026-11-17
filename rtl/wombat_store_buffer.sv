@@ -56,7 +56,11 @@ module wombat_store_buffer
 	input             m_err,
 
 	// High until every accepted buffered write has reached platform ack.
-	output            pending
+	output            pending,
+	// A slot is free in the next ce cycle (this cycle's push and pop
+	// counted): next_ap68040's line write burst asserts TA on it, then
+	// pushes the beat the core drives with that TA.
+	output            room_next
 );
 
 reg  [2:0] count;
@@ -121,6 +125,7 @@ wire pass_ok = (ENABLE != 0) && s_req && !s_write && !buffer_req &&
 wire direct_request = s_req && !buffer_req && ((count == 0) || pass_ok) && !drain_active;
 
 assign pending = (count != 0);
+assign room_next = ((count + {2'b00, push}) - {2'b00, pop}) != 3'd4;
 // A posted write is acknowledged in its capture cycle: nothing upstream
 // waits on it combinationally, and accept_ack still guards the held
 // request from being captured twice.

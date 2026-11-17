@@ -14,8 +14,13 @@
 //   +lat=N          RAM latency 1..N clocks (default 3)
 //   +cpfl=1         a third of the flushes in the copy test's buffers
 //                   (mkprog.py with COPYTEST=1)
+//   +wlat=N         every write takes N clocks (0: as reads; a full store
+//                   buffer for the line write burst's TA gating)
+//   +lb=N           next_ap68040's kept line (LINE_BURST): 0 never kept;
+//                   N > 0: each clock kept with chance N/4, else 'still
+//                   reading' half the time (default 2)
 `timescale 1ns/1ps
-module tb_fl;
+module tb_fl #(parameter LB = 1);   // LB: next_ap68040's LINE_BURST (-GLB=0 in DEFS)
 
 reg clk = 0, nreset = 0;
 always #5 clk = ~clk;
@@ -41,10 +46,17 @@ wire [127:0] fl_line;
 wire [31:4] fill_line;
 wire [31:0] dbg_pc;
 
-next_ap68040 #(.FPU_REVISION(8'h41), .SNOOP(2)) dut (
+// the machine's kept line (tc_machine: the SDRAM bridge's line): bus_addr's
+// line straight from the RAM model, which is current once every write is
+// acknowledged; randomly not kept or still being read
+int unsigned lb_n = 2;
+reg          lb_ok = 0, lb_wait = 0;
+wire [127:0] lb_data;
+next_ap68040 #(.FPU_REVISION(8'h41), .SNOOP(2), .LINE_BURST(LB)) dut (
 	.clk(clk), .clk_cpu(clk_cpu), .nreset(nreset), .ipl(ipl), .berr(1'b0),
 	.bus_req(bus_req), .bus_write(bus_write), .bus_instr(bus_instr), .bus_size(bus_size),
 	.bus_addr(bus_addr), .bus_wdata(bus_wdata), .bus_fc(bus_fc), .bus_ack(bus_ack), .bus_rdata(bus_rdata),
+	.lb_ok(lb_ok && !bbusy && !bus_ack && bus_addr[31:24] == 8'h04), .lb_wait(lb_wait), .lb_data(lb_data),
 	.snoop_stb(1'b0), .snoop_addr(32'd0), .snoop_full(),
 	.fl_req(fl_req), .fl_addr(fl_addr), .fl_done(fl_done), .fl_dirty(fl_dirty), .fl_line(fl_line),
 	.fill_stb(fill_stb), .fill_line(fill_line), .sb_pending(sb_pending),
@@ -61,6 +73,17 @@ task automatic wr32(input [31:0] a, input [31:0] d);
 	ram[{a[19:2], 2'd0}] = d[31:24]; ram[{a[19:2], 2'd1}] = d[23:16];
 	ram[{a[19:2], 2'd2}] = d[15:8];  ram[{a[19:2], 2'd3}] = d[7:0];
 endtask
+
+assign lb_data = {rd32({bus_addr[31:4], 4'h0}), rd32({bus_addr[31:4], 4'h4}),
+                  rd32({bus_addr[31:4], 4'h8}), rd32({bus_addr[31:4], 4'hC})};
+always @(posedge clk) begin
+	automatic int unsigned r = $urandom % 8;
+	lb_ok   <= (lb_n != 0) && (r < 2 * lb_n);
+	lb_wait <= (lb_n != 0) && (r >= 2 * lb_n) && r[0];
+end
+initial void'($value$plusargs("lb=%d", lb_n));
+int unsigned wlat = 0;         // +wlat=N: every write takes N clocks (fills the store buffer)
+initial void'($value$plusargs("wlat=%d", wlat));
 
 int unsigned bcnt = 0;
 // COPYTEST timing marks: clocks per phase (1 fill, 2 copy longs, 3 copy bytes, 4 compare)
@@ -113,7 +136,8 @@ always @(posedge clk) begin
 	else if (bus_req && !bus_ack) begin
 		bbusy <= 1'b1;
 		// I/O ($02xxxxxx): 20-40 clocks, as tc_machine's S_IO with a device
-		bcnt  <= (bus_addr[31:24] == 8'h02) ? 20 + ($urandom % 21) : 1 + ($urandom % lat_max);
+		bcnt  <= (bus_addr[31:24] == 8'h02) ? 20 + ($urandom % 21) :
+		         (bus_write && wlat != 0) ? wlat : 1 + ($urandom % lat_max);
 	end
 end
 
@@ -267,6 +291,19 @@ always @(posedge clk_cpu) if (nreset) begin
 	end
 	if (dut.cpu.snoop.ic_req && dut.cpu.snoop.ic_all) c_icall <= c_icall + 1;
 end
+// LINE_BURST coverage: kept-line bursts, waits, fall-backs; write bursts
+// and their wait clocks
+int unsigned cv_lb = 0, cv_lw = 0, cv_lf = 0, cv_wb = 0, cv_ww = 0;
+always @(posedge clk) if (nreset) begin
+	if (dut.cst == 3'd3) begin
+		if (!dut.sb_pending && dut.lb_ok) cv_lb++;
+		else if (!dut.sb_pending && dut.lb_wait) cv_lw++;
+		else cv_lf++;
+	end
+	if (dut.cst == 3'd5 && dut.wb_push && dut.beat == 2'd3) cv_wb++;
+	if (dut.cst == 3'd5 && dut.ta_n) cv_ww++;
+end
+final $display("COVER line burst %0d wait-clk %0d fallback %0d | write burst %0d wait-clk %0d", cv_lb, cv_lw, cv_lf, cv_wb, cv_ww);
 final $display("COVER ihit %0d snref %0d src way/pv/queued %0d/%0d/%0d kill-in-job %0d drop %0d ic_all-clk %0d stale-over-capture %0d",
                c_ihit, c_snref, c_src0, c_src1, c_src2, c_kill, c_drop, c_icall, c_stcap);
 

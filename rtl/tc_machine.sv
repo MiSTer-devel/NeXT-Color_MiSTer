@@ -332,6 +332,8 @@ wire [127:0] fl_line;
 wire        fill_stb;
 wire [31:4] fill_line;
 wire        sb_pending;
+wire        lb_ok, lb_wait;   // the kept line for next_ap68040's line burst
+wire [127:0] lb_data;
 reg         fl_ok;            // fl_addr is flushed and written back
 reg         wb_pend;          // fl_line is being written to RAM
 reg   [1:0] wb_k;
@@ -354,6 +356,9 @@ next_ap68040 #(.FPU_REVISION(8'h41)) cpu (
 	.bus_fc(bus_fc),
 	.bus_ack(bus_ack),
 	.bus_rdata(bus_rdata),
+	.lb_ok(lb_ok),
+	.lb_wait(lb_wait),
+	.lb_data(lb_data),
 
 	.snoop_stb(snoop_stb),               // DMA write: drop the D-cache line
 	.snoop_addr({snoop_line, 2'b00}),
@@ -908,6 +913,22 @@ wire bus_wr_direct = (DIRECT_WRITES != 0) && (svc == S_IDLE) && !walker_pend && 
                      !bus_ack_adapter && bus_req && bus_write &&
                      ((bus_wr_ram && (!bus_wr_span || bus_wr_nx_ok) && mem_wq_room) ||
                       (bus_wr_vram && !bus_wr_span && mem_vwq_room));
+
+// next_ap68040's line burst (LINE_BURST): with bus_req low and its store
+// buffer empty, bus_addr is the line read in progress; its other beats come
+// from the kept line in one go.  Only with nothing in flight that could
+// still change memory under it (the same conditions as bus_line_match: no
+// beat in service, no flushed line or direct push on its way); lb_wait
+// while the bridge is still reading that line or the bus is busy.
+wire        lb_ram   = (decode(bus_addr[31:2]) == 3'd0);
+wire        lb_vram  = (decode(bus_addr[31:2]) == 3'd2);
+wire        lb_hit   = (lb_ram && mem_line_valid && (bus_sdram[26:4] == mem_line_tag)) ||
+                       (lb_vram && mem_vline_ok && (bus_addr[20:4] == mem_vline_tag));
+wire        lb_quiet = (svc == S_IDLE) && !wb_pend && !mem_wp_valid && !wr_split_pend;
+assign      lb_ok    = lb_hit && lb_quiet;
+assign      lb_wait  = (lb_hit && !lb_quiet) ||
+                       (lb_ram && mem_line_pending && (bus_sdram[26:4] == mem_line_pending_tag));
+assign      lb_data  = lb_vram ? mem_vline_data : mem_line_data;
 
 assign bus_req_adapter = bus_req && !bus_line_match && !bus_vline_match && !bus_line_wait && !bus_wr_direct && !wr_split_pend &&
                          !bus_first_miss && !svc_bus_direct && !bus_miss_ack && !bus_line_ack;
