@@ -511,6 +511,7 @@ ARCHITECTURE rtl OF ascal IS
 	SIGNAL o_lex0,o_lex1,o_lex2,o_lex3       : std_logic;
 	SIGNAL o_wr : unsigned(3 DOWNTO 0);
 	SIGNAL o_hcpt,o_vcpt,o_vcpt_pre,o_vcpt_pre2,o_vcpt_pre3,o_vcpt2 : uint12;
+	SIGNAL o_heol, o_veol : boolean := false;
 	SIGNAL o_ihsize,o_ihsizem,o_ivsize : uint12;
 	SIGNAL o_ihsize_temp, o_ihsize_temp2 : natural RANGE 0 TO 32767;
 
@@ -1016,6 +1017,11 @@ ARCHITECTURE rtl OF ascal IS
 	TYPE type_poly_t IS RECORD
 		r0,r1,b0,b1,g0,g1 : signed(26 DOWNTO 0);
 	END RECORD;
+	-- NeXT-Color: poly_final split in two (poly_sum, then poly_bound) so the
+	-- horizontal scaler can register the sum and saturate one stage later.
+	TYPE type_poly_sum IS RECORD
+		r,g,b : signed(18 DOWNTO 0);
+	END RECORD;
 
 	SIGNAL o_h_poly_mem : arr_uv40(0 TO 2**FRAC-1);
 	SIGNAL o_v_poly_mem : arr_uv40(0 TO 2**FRAC-1);
@@ -1033,6 +1039,7 @@ ARCHITECTURE rtl OF ascal IS
 	SIGNAL o_poly_lum, o_poly_lum1 : unsigned(7 DOWNTO 0);
 	SIGNAL o_poly_lerp_ta, o_poly_lerp_tb : signed(9 DOWNTO 0);
 	SIGNAL o_h_poly_t,o_h_poly_t2,o_v_poly_t   : type_poly_t;
+	SIGNAL o_h_poly_sum : type_poly_sum;
 
 	SIGNAL o_v_poly_adaptive, o_h_poly_adaptive, o_v_poly_use_adaptive, o_h_poly_use_adaptive : std_logic;
 	SIGNAL poly_wr_mode : std_logic_vector(2 DOWNTO 0);
@@ -1076,6 +1083,25 @@ ARCHITECTURE rtl OF ascal IS
 		p.r:=bound(unsigned(t.r0(26 DOWNTO 8)+t.r1(26 DOWNTO 8)),15);
 		p.g:=bound(unsigned(t.g0(26 DOWNTO 8)+t.g1(26 DOWNTO 8)),15);
 		p.b:=bound(unsigned(t.b0(26 DOWNTO 8)+t.b1(26 DOWNTO 8)),15);
+		RETURN p;
+	END FUNCTION;
+
+	-- poly_final(t) = poly_bound(poly_sum(t))
+	FUNCTION poly_sum(t : type_poly_t) RETURN type_poly_sum IS
+		VARIABLE s : type_poly_sum;
+	BEGIN
+		s.r:=t.r0(26 DOWNTO 8)+t.r1(26 DOWNTO 8);
+		s.g:=t.g0(26 DOWNTO 8)+t.g1(26 DOWNTO 8);
+		s.b:=t.b0(26 DOWNTO 8)+t.b1(26 DOWNTO 8);
+		RETURN s;
+	END FUNCTION;
+
+	FUNCTION poly_bound(s : type_poly_sum) RETURN type_pix IS
+		VARIABLE p : type_pix;
+	BEGIN
+		p.r:=bound(unsigned(s.r),15);
+		p.g:=bound(unsigned(s.g),15);
+		p.b:=bound(unsigned(s.b),15);
 		RETURN p;
 	END FUNCTION;
 
@@ -2680,8 +2706,12 @@ BEGIN
 			-- C9 : Apply Polyphase
 			o_h_poly_t<=poly_calc(o_h_poly_phase,o_hpixq(8));
 
-			-- C10 : Sum and bound
-			o_h_poly_pix<=poly_final(o_h_poly_t);
+			-- C10 : Sum
+			-- NeXT-Color: the bound (saturate) moved to C11, below.  At 148.5 MHz
+			-- the DSP result -> 19-bit add -> saturate -> sclr path missed timing
+			-- by up to 0.27 ns on a 98 % full device.  Same latency: C11 still
+			-- loads the bounded pixel into o_ldw.
+			o_h_poly_sum<=poly_sum(o_h_poly_t);
 
 			-- C11 : Select interpoler ----------------------------
 			o_wadl<=o_dcptv(14);
@@ -2691,7 +2721,7 @@ BEGIN
 			CASE o_hmode(2 DOWNTO 0) IS
 				WHEN "000"  => -- Nearest
 					IF MASK(MASK_NEAREST)='1' THEN
-						o_ldw<=o_h_poly_pix;
+						o_ldw<=poly_bound(o_h_poly_sum);
 				 END IF;
 				WHEN "001" | "010" => -- Bilinear | Sharp Bilinear
 					IF MASK(MASK_BILINEAR)='1' OR
@@ -2704,7 +2734,7 @@ BEGIN
 					END IF;
 				WHEN OTHERS => -- PolyPhase
 					IF MASK(MASK_POLY)='1' THEN
-						o_ldw<=o_h_poly_pix;
+						o_ldw<=poly_bound(o_h_poly_sum);
 					END IF;
 			END CASE;
 			------------------------------------------------------
@@ -2758,9 +2788,27 @@ BEGIN
 	BEGIN
 		IF rising_edge(o_clk) THEN
 
+			-- NeXT-Color: end-of-line and end-of-frame compares registered one
+			-- cycle ahead.  o_heol = (o_hcpt+1>=o_htotal) for the o_hcpt value
+			-- now held, o_veol = (o_vcpt_pre3+1>=o_vtotal).  Upstream chained both
+			-- 12-bit compares into the o_vcpt_pre3 update in one 148.5 MHz cycle,
+			-- which missed timing by up to 0.64 ns on a 98 % full device.
+			-- o_vcpt_pre3 only changes at end of line, at least one clock before
+			-- the next end of line, so o_veol is always current when used.
+			o_veol<=(o_vcpt_pre3+1>=o_vtotal);
+			IF o_ce='1' THEN
+				IF o_heol THEN
+					o_heol<=(1>=o_htotal);
+				ELSE
+					o_heol<=(o_hcpt+2>=o_htotal);
+				END IF;
+			ELSE
+				o_heol<=(o_hcpt+1>=o_htotal);
+			END IF;
+
 			IF o_ce='1' THEN
 				-- Output pixels count
-				IF o_hcpt+1<o_htotal THEN
+				IF NOT o_heol THEN
 					o_hcpt<=(o_hcpt+1) MOD 4096;
 				ELSE
 					o_hcpt<=0;
@@ -2769,7 +2817,7 @@ BEGIN
 						o_vcpt_sync <= o_vcpt_sync+1;
 					END IF;
 
-					IF o_vcpt_pre3+1>=o_vtotal THEN
+					IF o_veol THEN
 						o_vcpt_pre3<=0;
 					ELSIF o_vrr_sync2 THEN
 						o_vcpt_pre3<=o_vsstart;
