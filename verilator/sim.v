@@ -104,6 +104,9 @@ wire [26:4] mem_line_tag;
 wire [127:0] mem_line_data;
 wire        mem_line_pending;
 wire [26:4] mem_line_pending_tag;
+wire        mem_vline_ok;
+wire [20:4] mem_vline_tag;
+wire [127:0] mem_vline_data;
 
 wire [31:0] hreg, vreg;
 wire        video_enable;
@@ -179,6 +182,9 @@ tc_machine machine
 	.mem_line_data(mem_line_data),
 	.mem_line_pending(mem_line_pending),
 	.mem_line_pending_tag(mem_line_pending_tag),
+	.mem_vline_ok(mem_vline_ok),
+	.mem_vline_tag(mem_vline_tag),
+	.mem_vline_data(mem_vline_data),
 
 	.tmc_hreg(hreg),
 	.tmc_vreg(vreg),
@@ -321,6 +327,9 @@ tc_memsys memsys
 	.mem_line_data(mem_line_data),
 	.mem_line_pending(mem_line_pending),
 	.mem_line_pending_tag(mem_line_pending_tag),
+	.mem_vline_ok(mem_vline_ok),
+	.mem_vline_tag(mem_vline_tag),
+	.mem_vline_data(mem_vline_data),
 
 	.rom_we(1'b0),
 	.rom_waddr(16'd0),

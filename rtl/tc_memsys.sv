@@ -47,6 +47,9 @@ module tc_memsys
 	output    [127:0] mem_line_data,
 	output            mem_line_pending,
 	output     [26:4] mem_line_pending_tag,
+	output            mem_vline_ok,       // tc_vram's kept line, clk_sys copy
+	output     [20:4] mem_vline_tag,
+	output    [127:0] mem_vline_data,
 
 	// boot ROM loader (while the machine is held in reset)
 	input             rom_we,
@@ -198,6 +201,9 @@ tc_vram vram
 	.wp_be(mem_wp_be),
 	.wp_data(mem_wp_data),
 	.wq_room(mem_vwq_room),
+	.vl_ok(mem_vline_ok),
+	.vl_tag(mem_vline_tag),
+	.vl_data(mem_vline_data),
 
 	.hreg(hreg),
 	.vreg(vreg),

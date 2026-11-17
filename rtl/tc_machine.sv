@@ -77,6 +77,10 @@ module tc_machine
 	input     [127:0] mem_line_data,
 	input             mem_line_pending,
 	input      [26:4] mem_line_pending_tag,
+	// tc_vram's kept line (VRAM byte address [20:4]), clk_sys copy
+	input             mem_vline_ok,
+	input      [20:4] mem_vline_tag,
+	input     [127:0] mem_vline_data,
 
 	// video control (to the scan-out)
 	output     [31:0] tmc_hreg,
@@ -853,11 +857,19 @@ wire [31:0] line_cpu_data = (b_addr[3:2] == 2'd0) ? mem_line_data[127:96] :
                             (b_addr[3:2] == 2'd2) ? mem_line_data[63:32]  :
                                                     mem_line_data[31:0];
 
-wire bus_ram_eligible = (svc == S_IDLE) && !walker_pend && !cpu_berr && !wb_pend &&
+wire bus_rd_eligible  = (svc == S_IDLE) && !walker_pend && !cpu_berr && !wb_pend &&
                         !bus_miss_ack && !bus_line_ack && !bus_adapter_active &&
                         !bus_ack_adapter && bus_req && !bus_write &&
-                        (bus_size == 2'd2) && (bus_addr[1:0] == 2'b00) &&
-                        (decode(bus_addr[31:2]) == 3'd0);
+                        (bus_size == 2'd2) && (bus_addr[1:0] == 2'b00);
+wire bus_ram_eligible = bus_rd_eligible && (decode(bus_addr[31:2]) == 3'd0);
+// an aligned longword read of tc_vram's kept line: answered in one cycle
+// from its clk_sys copy (the line fill's second to fourth beats)
+wire bus_vline_match = bus_rd_eligible && (decode(bus_addr[31:2]) == 3'd2) &&
+                       mem_vline_ok && (bus_addr[20:4] == mem_vline_tag);
+wire [31:0] bus_vline_data = (bus_addr[3:2] == 2'd0) ? mem_vline_data[127:96] :
+                             (bus_addr[3:2] == 2'd1) ? mem_vline_data[95:64]  :
+                             (bus_addr[3:2] == 2'd2) ? mem_vline_data[63:32]  :
+                                                       mem_vline_data[31:0];
 wire bus_line_match = bus_ram_eligible && mem_line_valid &&
                       (bus_sdram[26:4] == mem_line_tag);
 wire bus_line_wait  = bus_ram_eligible && mem_line_pending &&
@@ -897,7 +909,7 @@ wire bus_wr_direct = (DIRECT_WRITES != 0) && (svc == S_IDLE) && !walker_pend && 
                      ((bus_wr_ram && (!bus_wr_span || bus_wr_nx_ok) && mem_wq_room) ||
                       (bus_wr_vram && !bus_wr_span && mem_vwq_room));
 
-assign bus_req_adapter = bus_req && !bus_line_match && !bus_line_wait && !bus_wr_direct && !wr_split_pend &&
+assign bus_req_adapter = bus_req && !bus_line_match && !bus_vline_match && !bus_line_wait && !bus_wr_direct && !wr_split_pend &&
                          !bus_first_miss && !svc_bus_direct && !bus_miss_ack && !bus_line_ack;
 
 always @(posedge clk) begin
@@ -907,9 +919,9 @@ always @(posedge clk) begin
 	end
 	else if (ce) begin
 		bus_line_ack <= 0;
-		if (!bus_line_ack && bus_line_match) begin
+		if (!bus_line_ack && (bus_line_match || bus_vline_match)) begin
 			bus_line_ack   <= 1;
-			bus_line_rdata <= bus_line_data;
+			bus_line_rdata <= bus_vline_match ? bus_vline_data : bus_line_data;
 		end
 	end
 end

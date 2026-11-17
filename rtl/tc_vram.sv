@@ -63,6 +63,12 @@ module tc_vram
 	input      [31:0] wp_data,
 	output            wq_room,        // at least two free slots
 
+	// the kept line, copied to clk_sys when a read completes (tc_machine
+	// answers later reads of it in one cycle, like the SDRAM bridge's line)
+	output            vl_ok,          // vl_data holds VRAM line vl_tag
+	output reg [20:4] vl_tag,
+	output reg [127:0] vl_data,
+
 	// video control (clk_sys, quasi-static)
 	input      [31:0] hreg,
 	input      [31:0] vreg,
@@ -93,7 +99,9 @@ module tc_vram
 );
 
 localparam [28:0] VRAM_BASE = 29'h0600_0000;     // byte $30000000 / 8
-localparam  [7:0] FETCH_BURST = 8'd40;           // words per scan-out burst (280 = 7 x 40)
+// words per scan-out burst (280 = 17 x 16 + 8).  Short, so a CPU read
+// waits at most one 16-beat burst behind the scan-out.
+localparam  [7:0] FETCH_BURST = 8'd16;
 
 function [31:0] bswap;
 	input [31:0] x;
@@ -109,6 +117,10 @@ reg        c_busy;
 reg        r_done_t = 0;       // clk_ram: toggles when a read completes
 reg [31:0] r_rdata;
 reg        c_done_seen = 0;
+// the kept CPU line (clk_ram; copied to vl_data on clk_sys, below)
+reg [127:0] line;
+reg  [20:4] line_tag;
+reg         line_valid = 0;
 
 // The posted-write queue (sdram_beat32's FIFO): eight entries on clk_sys,
 // fed by the beat port and by tc_machine's direct push; beat writes are
@@ -170,13 +182,26 @@ assign wq_empty = (wq_wp == wq_rp_sys);
 wire  [3:0] wq_used = wq_wp - wq_rp_sys;
 assign wq_room  = (wq_used <= 4'd6);
 
+// The clk_sys copy of the kept line (vl_*).  Loaded from the clk_ram line
+// when a read completes: the engine set line and r_done_t on the same
+// clk_ram edge, and a read is only sent with the queue empty and blocks the
+// beat port, so nothing changes the line before the copy (the same timed
+// multi-rate path as r_rdata).  A write queued to that line drops the copy
+// as it enters the queue; vl_ok also masks a direct push in its push cycle,
+// so a read right behind a store never sees the old data.
+reg         vl_valid = 0;
+wire [20:4] wq_push_tag = wp_valid ? wp_addr[20:4] : addr[20:4];
+assign vl_ok = vl_valid && !(wp_valid && wp_addr[20:4] == vl_tag);
+
 always @(posedge clk_sys) begin
 	ack <= 0;
 	if (wq_push) wq_wp <= wq_wp + 4'd1;
 	if (wq_push_bus) ack <= 1;
+	if (wq_push && wq_push_tag == vl_tag) vl_valid <= 0;
 	if (reset) begin
 		c_busy <= 0;
 		c_done_seen <= r_done_t;
+		vl_valid <= 0;
 	end
 	else begin
 		if (!c_busy) c_done_seen <= r_done_t;
@@ -190,6 +215,9 @@ always @(posedge clk_sys) begin
 			c_busy <= 0;
 			ack    <= 1;
 			rdata  <= r_rdata;
+			vl_data  <= line;
+			vl_tag   <= c_addr[20:4];
+			vl_valid <= !(wq_push && wq_push_tag == c_addr[20:4]);
 		end
 	end
 end
@@ -289,10 +317,7 @@ always @(posedge clk_ram) begin
 	end
 end
 
-// the kept CPU line
-reg [127:0] line;
-reg  [20:4] line_tag;
-reg         line_valid = 0;
+// the kept CPU line (declared with the clk_sys request state above)
 
 // fetch engine: fetches whole lines, in bursts, into the line buffer half
 // line[0].  Allowed up to two lines past the last one displayed (none at

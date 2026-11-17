@@ -404,6 +404,9 @@ wire [26:4] mem_line_tag;
 wire [127:0] mem_line_data;
 wire        mem_line_pending;
 wire [26:4] mem_line_pending_tag;
+wire        mem_vline_ok;
+wire [20:4] mem_vline_tag;
+wire [127:0] mem_vline_data;
 
 wire [31:0] tmc_hreg, tmc_vreg;
 wire        video_enable;
@@ -442,6 +445,9 @@ tc_machine #(.CLK_HZ(CLK_SYS_HZ)) machine
 	.mem_line_data(mem_line_data),
 	.mem_line_pending(mem_line_pending),
 	.mem_line_pending_tag(mem_line_pending_tag),
+	.mem_vline_ok(mem_vline_ok),
+	.mem_vline_tag(mem_vline_tag),
+	.mem_vline_data(mem_vline_data),
 
 	.tmc_hreg(tmc_hreg),
 	.tmc_vreg(tmc_vreg),
@@ -586,6 +592,9 @@ tc_memsys #(.RAM_HZ(3 * CLK_SYS_HZ)) memsys
 	.mem_line_data(mem_line_data),
 	.mem_line_pending(mem_line_pending),
 	.mem_line_pending_tag(mem_line_pending_tag),
+	.mem_vline_ok(mem_vline_ok),
+	.mem_vline_tag(mem_vline_tag),
+	.mem_vline_data(mem_vline_data),
 
 	// boot.rom is ioctl index 0 (the Main loads games/NeXT-Color/boot.rom at
 	// core start), the OSD "Load ROM" entry is index 1.  Byte-wide
