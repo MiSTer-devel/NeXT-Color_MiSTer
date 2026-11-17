@@ -72,6 +72,7 @@ V_SRC = \
 	$(RTL)/dsp56k/dsp_ram.sv \
 	$(RTL)/dsp56k/dsp56k_rom.sv \
 	$(RTL)/dsp56k/dsp56k_alu.sv \
+	$(RTL)/dsp56k/dsp56k_agu.sv \
 	$(RTL)/dsp56k/dsp56k_dec.sv \
 	$(RTL)/dsp56k/dsp56k_core.sv \
 	$(RTL)/dsp56k/next_dsp_periph.sv \
