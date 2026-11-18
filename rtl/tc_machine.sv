@@ -55,12 +55,12 @@ module tc_machine
 	input   [1:0] ram_cfg,
 
 	// platform memory beat port
-	output reg        mem_req,
-	output reg        mem_write,
-	output reg [26:2] mem_addr,
-	output reg  [3:0] mem_be,
+	output            mem_req,
+	output            mem_write,
+	output     [26:2] mem_addr,
+	output      [3:0] mem_be,
 	output reg [31:0] mem_wdata,
-	output reg  [1:0] mem_memsel,         // 0 RAM, 1 ROM, 2 VRAM
+	output      [1:0] mem_memsel,         // 0 RAM, 1 ROM, 2 VRAM
 	input      [31:0] mem_rdata,
 	input             mem_ack,
 	// posted RAM writes straight into the SDRAM bridge's write FIFO
@@ -831,6 +831,18 @@ localparam S_IDLE = 3'd0, S_MEM = 3'd1, S_IO = 3'd2, S_BERR = 3'd3, S_OPEN = 3'd
 reg  [2:0] svc;
 reg        svc_walker;
 reg        svc_bus_direct;
+// The beat port's request registers (mem_*_q).  A RAM read miss is also
+// shown to the memory system combinationally in the clock the service FSM
+// takes it (mem_early: exactly the S_IDLE branch that loads S_MEM with it
+// below), so the SDRAM bridge starts the read a clock sooner.  From the
+// next clock the registered request says the same thing; the bridge, busy
+// with it (or acking it), does not take it twice.
+reg        mem_req_q;
+reg        mem_write_q;
+reg [26:2] mem_addr_q;
+reg  [3:0] mem_be_q;
+reg  [1:0] mem_memsel_q;
+wire       mem_early;             // (assigned below, after dma_take)
 reg        svc_dma;           // the beat in S_MEM is tc_tdma's
 reg        svc_wb;            // the beat in S_MEM writes back a flushed line
 reg        fl_stale;          // the core read fl_addr's line since it was asked for
@@ -956,6 +968,12 @@ wire dm_flushed = !ram_present(dm_addr) || (dm_line_ok && !wb_pend && !sb_pendin
 wire dma_take = dm_req && !dm_ack && !dm_err && !walker_pend && !snoop_full && !wb_pend && dm_flushed &&
                 (dma_turn || !cpu_want);
 wire fill_hit = fill_stb && (fill_line == fl_addr);
+assign mem_early = ce && bus_first_miss && !dma_take;   // S_IDLE: cpu_want, bus_first_miss branch
+assign mem_req    = mem_req_q || mem_early;
+assign mem_write  = mem_early ? 1'b0       : mem_write_q;
+assign mem_addr   = mem_early ? bus_sdram  : mem_addr_q;
+assign mem_be     = mem_early ? 4'b1111    : mem_be_q;
+assign mem_memsel = mem_early ? MSEL_RAM   : mem_memsel_q;
 
 assign dbg_berr      = (svc == S_BERR);
 assign dbg_berr_addr = {svc_addr, 2'b00};
@@ -1000,12 +1018,12 @@ always @(posedge clk) begin
 		mem_wp_data    <= 0;
 		mem_wp_vram    <= 0;
 		cpu_berr       <= 0;
-		mem_req        <= 0;
-		mem_write      <= 0;
-		mem_addr       <= 0;
-		mem_be         <= 0;
+		mem_req_q      <= 0;
+		mem_write_q    <= 0;
+		mem_addr_q     <= 0;
+		mem_be_q       <= 0;
 		mem_wdata      <= 0;
-		mem_memsel     <= MSEL_RAM;
+		mem_memsel_q   <= MSEL_RAM;
 		io_stb         <= 0;
 		io_we          <= 0;
 		io_addr        <= 0;
@@ -1071,12 +1089,12 @@ always @(posedge clk) begin
 				svc_dma    <= 0;
 				svc_walker <= 0;
 				svc_bus_direct <= 0;
-				mem_req    <= 1;
-				mem_write  <= 1;
-				mem_addr   <= ram_sdram({fl_addr, wb_k});
-				mem_be     <= 4'b1111;
+				mem_req_q      <= 1;
+				mem_write_q    <= 1;
+				mem_addr_q     <= ram_sdram({fl_addr, wb_k});
+				mem_be_q       <= 4'b1111;
 				mem_wdata  <= wb_line[127 - 32 * wb_k -: 32];
-				mem_memsel <= MSEL_RAM;
+				mem_memsel_q   <= MSEL_RAM;
 				svc        <= S_MEM;
 			end
 			else if (dma_take) begin
@@ -1087,12 +1105,12 @@ always @(posedge clk) begin
 				snoop_line     <= dm_addr;
 				if (ram_present(dm_addr)) begin
 					svc_dma    <= 1;
-					mem_req    <= 1;
-					mem_write  <= dm_we;
-					mem_addr   <= ram_sdram(dm_addr);
-					mem_be     <= dm_be;
+					mem_req_q      <= 1;
+					mem_write_q    <= dm_we;
+					mem_addr_q     <= ram_sdram(dm_addr);
+					mem_be_q       <= dm_be;
 					mem_wdata  <= dm_wdata;
-					mem_memsel <= MSEL_RAM;
+					mem_memsel_q   <= MSEL_RAM;
 					svc        <= S_MEM;
 				end
 				else dm_err <= 1;            // not DRAM: the channel takes BUSEXC
@@ -1107,12 +1125,12 @@ always @(posedge clk) begin
 					svc_walker     <= 0;
 					svc_bus_direct <= 1;
 					svc_addr       <= bus_addr[31:2];
-					mem_req        <= 1;
-					mem_write      <= 0;
-					mem_addr       <= bus_sdram;
-					mem_be         <= 4'b1111;
+					mem_req_q      <= 1;
+					mem_write_q    <= 0;
+					mem_addr_q     <= bus_sdram;
+					mem_be_q       <= 4'b1111;
 					mem_wdata      <= 0;
-					mem_memsel     <= MSEL_RAM;
+					mem_memsel_q   <= MSEL_RAM;
 					svc            <= S_MEM;
 				end
 				else if (bus_wr_direct) begin
@@ -1147,33 +1165,33 @@ always @(posedge clk) begin
 					svc_addr <= a;
 					case (decode(a))
 					3'd0: begin
-						mem_req    <= 1;
-						mem_write  <= wr;
-						mem_addr   <= ram_sdram(a);
-						mem_be     <= be;
+						mem_req_q      <= 1;
+						mem_write_q    <= wr;
+						mem_addr_q     <= ram_sdram(a);
+						mem_be_q       <= be;
 						mem_wdata  <= wd;
-						mem_memsel <= MSEL_RAM;
+						mem_memsel_q   <= MSEL_RAM;
 						svc        <= S_MEM;
 					end
 					3'd1: begin
 						if (wr) svc <= S_BERR;          // ROM writes bus-error (Previous ROM_bank)
 						else begin
-							mem_req    <= 1;
-							mem_write  <= 0;
-							mem_addr   <= {10'd0, a[16:2]};
-							mem_be     <= be;
+							mem_req_q      <= 1;
+							mem_write_q    <= 0;
+							mem_addr_q     <= {10'd0, a[16:2]};
+							mem_be_q       <= be;
 							mem_wdata  <= wd;
-							mem_memsel <= MSEL_ROM;
+							mem_memsel_q   <= MSEL_ROM;
 							svc        <= S_MEM;
 						end
 					end
 					3'd2: begin
-						mem_req    <= 1;
-						mem_write  <= wr;
-						mem_addr   <= {6'd0, a[20:2]};
-						mem_be     <= be;
+						mem_req_q      <= 1;
+						mem_write_q    <= wr;
+						mem_addr_q     <= {6'd0, a[20:2]};
+						mem_be_q       <= be;
 						mem_wdata  <= wd;
-						mem_memsel <= MSEL_VRAM;
+						mem_memsel_q   <= MSEL_VRAM;
 						svc        <= S_MEM;
 					end
 					3'd3: begin
@@ -1206,7 +1224,7 @@ always @(posedge clk) begin
 			end
 		end
 		S_MEM: if (mem_ack) begin
-			mem_req <= 0;
+			mem_req_q      <= 0;
 			if (svc_wb) begin
 				svc_wb <= 0;
 				wb_k   <= wb_k + 2'd1;
@@ -1218,7 +1236,7 @@ always @(posedge clk) begin
 			else if (svc_dma) begin
 				dm_ack    <= 1;
 				dm_rdata  <= mem_rdata;
-				snoop_stb <= mem_write;
+				snoop_stb <= mem_write_q;
 				svc_dma   <= 0;
 			end
 			else if (svc_walker) begin
