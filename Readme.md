@@ -362,7 +362,8 @@ and 31250 for MIDI).
 
 * No sound input, no DSP serial port, no printer (its registers only), no
   ADB devices, no second display. The NVRAM is not saved.
-* The FPGA is nearly full (about 95% of its logic), so fitter results vary a
+* The FPGA is nearly full (98% of its logic: 41,233 of 41,910 ALMs in the
+  current build, bcopy52wa seed 7), so fitter results vary a
   lot between builds: a build is released only when it meets timing, and a
   build that misses timing is only tried with NeXTSTEP shut down.
 
