@@ -6,8 +6,8 @@
 //  apolkosnik/Falcon_MiSTer rtl/falcon/dsp, with the NeXT memory map, IRQB
 //  and start modes, and next_dsp_periph for the NeXT host bus).
 //
-//  One DSP clock per clk, 2 per instruction cycle: 12.5 MIPS at 25 MHz, a
-//  real 25 MHz 56001.  (NEXT_DSP_ARM in the qsf selects rtl/tc_dsp.sv, the
+//  One DSP clock per clk, 2 per instruction cycle: 13 MIPS at 26 MHz (a
+//  real 25 MHz 56001 does 12.5).  (NEXT_DSP_ARM in the qsf selects rtl/tc_dsp.sv, the
 //  DSP on the ARM, instead.)
 //
 //  "dsp.c:n" / "dsp_core.c:n" / "sysReg.c:n" = Previous r1851 src/dsp and src.

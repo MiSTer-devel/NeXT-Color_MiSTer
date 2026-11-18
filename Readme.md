@@ -4,7 +4,7 @@
 [MiSTer-devel/NeXT-Color_MiSTer](https://github.com/MiSTer-devel/NeXT-Color_MiSTer).
 It branches from the official repository's first release (20261010) and adds:
 
-* the CPU at 50 MHz (the pipelined AP68040 on a 25 MHz machine bus; the
+* the CPU at 52 MHz (the pipelined AP68040 on a 26 MHz machine bus; the
   official core runs a 68040 at 33 MHz);
 * the DSP56001 in the FPGA (the Falcon_MiSTer DSP core), for Sound Kit and
   Music Kit;
@@ -20,7 +20,7 @@ MiSTer-devel's repository and its update script.
 
 ## General description
 
-A NeXTstation Turbo Color core for MiSTer: a 50 MHz 68040, the Turbo chipset,
+A NeXTstation Turbo Color core for MiSTer: a 52 MHz 68040, the Turbo chipset,
 12-bit colour at 1120x832, NeXT ROM Rev 3.3 v74. It boots NeXTSTEP 3.3 to the
 colour desktop. Work in progress.
 
@@ -41,7 +41,7 @@ up on eth0.
 
 | Part | State |
 |---|---|
-| CPU | 68040 at 50 MHz on a 25 MHz machine bus (the pipelined AP68040), FPU, MMU. BenchPress Dhrystone 243 (25 MHz NeXTstation Color = 100) |
+| CPU | 68040 at 52 MHz on a 26 MHz machine bus (the pipelined AP68040), FPU, MMU. BenchPress Dhrystone 255 (25 MHz NeXTstation Color = 100) |
 | Memory | 16, 32 (default), 64 or 128 MB in SDRAM, no more than the SDRAM module |
 | Video | 1120x832 at 68.4 Hz, 12-bit colour (Bt463 palette, TMC timing) |
 | Keyboard and mouse | PS/2 keyboard and mouse as the NeXT keyboard (KMS) |
@@ -49,7 +49,7 @@ up on eth0.
 | Floppy | 2.88 MB drive (720K, 1.44M and 2.88M images) |
 | Ethernet | On the MiSTer's LAN (optional) |
 | Sound out | 16-bit stereo, 44.1 and 22.05 kHz |
-| DSP56001 | In the FPGA, 12.5 MIPS, 8K words of external RAM (see "Sound and DSP"); Sound Kit and Music Kit work |
+| DSP56001 | In the FPGA, 13 MIPS, 8K words of external RAM (see "Sound and DSP"); Sound Kit and Music Kit work |
 | Serial ports | Z8530 SCC, ports A and B (see "Serial and MIDI"): a 9600 baud login console on the MiSTer UART, MIDI to an MT32-pi |
 | Sound in, DSP serial port, printer, ADB | Not present |
 
@@ -309,8 +309,8 @@ be lost.
   checked against Hatari instruction by instruction) with the NeXT's host
   port, DSP DMA (packed and unpacked), SCR2 reset / start mode / memory
   enable, IRQB at a DMA block end and the TXD interrupt.  It runs at the
-  machine clock, one instruction cycle per two clocks: 12.5 MIPS at
-  25 MHz, a real 25 MHz 56001's rate.  External RAM: the standard 8K
+  machine clock, one instruction cycle per two clocks: 13 MIPS at
+  26 MHz, a little above a real 25 MHz 56001's 12.5 MIPS.  External RAM: the standard 8K
   words (24 KB); no 96 KB expansion.  On hardware (2026-10-23 to 10-25)
   NeXTSTEP boots it, sndplay plays mu-law and ATC-compressed sounds through
   it, and playscore plays Music Kit scores (CoventryCarol, FugueCMajor,
