@@ -390,6 +390,18 @@ and 31250 for MIDI).
   Many thanks to Adam for both: this core's speed comes from the AP68040,
   and its in-FPGA DSP from his DSP56001.
 
+## License
+
+This core is free software under the GNU General Public License, version 2
+or (at your option) any later version; the full text is in [LICENSE](LICENSE).
+The AP68040 (`rtl/ap68040`, see its [LICENSE](rtl/ap68040/LICENSE)) is GPL v2
+or later as well.
+
+Some files carry their own notices and keep them: the MiSTer framework in
+`sys/` and a few files in `rtl/` (for example `rtl/sdram.sv`) are GPL v3 or
+later, and the simulator's Dear ImGui (`verilator/sim/imgui`) is MIT. A
+built `.rbf` combines all of these, so it is distributed under the GPL v3.
+
 ## Building
 
 * `bash scripts/build_only.sh` (Git bash; `--check` = Analysis & Synthesis
