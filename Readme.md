@@ -378,11 +378,17 @@ and 31250 for MIDI).
   and **Alanswx** ([MiSTer-devel/Apple-Lisa_MiSTer](https://github.com/MiSTer-devel/Apple-Lisa_MiSTer)):
   the Apple Lisa core, whose single-clock version of the SCC
   (`rtl/z8530_scc.sv`) this core imports.
-* **Apolkosnik** ([apolkosnik/AP68040](https://github.com/apolkosnik/AP68040),
+* **Adam Polkosnik** ([apolkosnik](https://github.com/apolkosnik):
+  [apolkosnik/AP68040](https://github.com/apolkosnik/AP68040),
   [apolkosnik/Falcon_MiSTer](https://github.com/apolkosnik/Falcon_MiSTer)):
-  the AP68040, the pipelined 68040 (`rtl/ap68040`) that runs this core's CPU
-  at 50 MHz, and the DSP56001 core (`rtl/dsp56k`) that runs the NeXT's DSP
-  in the FPGA.
+  * the AP68040, the pipelined, cached 68040 (`rtl/ap68040`) that runs this
+    core's CPU, with its instruction and copyback data caches, MMU and FPU;
+  * the DSP56001 core from Falcon_MiSTer (`rtl/falcon/dsp` there,
+    `rtl/dsp56k` here), which runs the NeXT's DSP in the FPGA for sound
+    playback and DSP-based applications.
+
+  Many thanks to Adam for both: this core's speed comes from the AP68040,
+  and its in-FPGA DSP from his DSP56001.
 
 ## Building
 
