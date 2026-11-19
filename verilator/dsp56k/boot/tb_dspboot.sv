@@ -107,7 +107,7 @@ initial begin
 			if (!ok) begin dump("FAIL TXDE timeout"); errors++; break; end
 			host_gap; tx_word(script[pc][23:0]); ntx++;
 		end
-		8'h02, 8'h04: begin
+		8'h02, 8'h04, 8'h09: begin
 			wait_isr(0, (script[pc][31:24] == 8'h04) ? 20000 : 200000, ok);
 			if (!ok && script[pc][31:24] == 8'h04) begin dump("no more DSP words"); pc++; continue; end
 			if (!ok) begin dump("FAIL RXDF timeout"); errors++; break; end
@@ -128,6 +128,46 @@ initial begin
 			wr(1'b0, 4'b1000, {script[pc][7:0], 24'd0});
 			$display("ICR <- %02x (script %0d)", script[pc][7:0], pc);
 		end
+		8'h05: begin                       // host command: CVR = $80|vec, wait HC clear
+			host_gap;
+			wr(1'b0, 4'b0100, {8'd0, 8'h80 | script[pc][7:0], 16'd0});
+			ok = 0;
+			for (int i = 0; i < 20000 && !ok; i++) begin
+				rd(1'b0, 4'b0100, d); if (!d[23]) ok = 1; else cyc(4);
+			end
+			if (!ok) begin dump("FAIL HC not cleared"); errors++; break; end
+			$display("HC $%02x done (script %0d)", script[pc][7:0], pc);
+		end
+		8'h06, 8'h07: begin                // wait ISR & mask == 0 (06) / == mask (07)
+			ok = 0;
+			for (int i = 0; i < 200000 && !ok; i++) begin
+				rd(1'b0, 4'b0010, d);
+				if (script[pc][31:24] == 8'h06 ? ((d[15:8] & script[pc][7:0]) == 0)
+				                                : ((d[15:8] & script[pc][7:0]) == script[pc][7:0])) ok = 1;
+				else cyc(4);
+			end
+			if (!ok) begin dump($sformatf("FAIL ISR wait %s %02x", script[pc][31:24] == 8'h06 ? "clear" : "set", script[pc][7:0])); errors++; break; end
+		end
+		8'h08: begin                       // check x:<addr> == next entry (internal X RAM)
+			cyc(200);
+			if (dut.u_core.u_xint.mem[script[pc][7:0]] !== script[pc+1][23:0]) begin
+				$display("FAIL x:%02x = %06x, expected %06x", script[pc][7:0],
+				         dut.u_core.u_xint.mem[script[pc][7:0]], script[pc+1][23:0]);
+				errors++;
+			end else $display("ok: x:%02x = %06x", script[pc][7:0], script[pc+1][23:0]);
+			pc++;
+		end
+		8'h0a: begin                       // read words until opcode (bits 23:16) == data[7:0], max 4
+			ok = 0;
+			for (int k = 0; k < 4 && !ok; k++) begin
+				wait_isr(0, 20000, ok);
+				if (!ok) break;
+				rx_word(d[23:0]); nrx++;
+				$display("RX %06x (script %0d, until opcode %02x)", d[23:0], pc, script[pc][7:0]);
+				ok = (d[23:16] == script[pc][7:0]);
+			end
+			if (!ok) begin dump($sformatf("FAIL no DSP message %02x", script[pc][7:0])); errors++; break; end
+		end
 		default: ;
 		endcase
 		pc++;
@@ -138,6 +178,18 @@ initial begin
 	$finish;
 end
 
+integer trace = 0;
+reg [4:0] hcr_q = 0;
+initial void'($value$plusargs("trace=%d", trace));
+always @(posedge clk) if (trace != 0 && dut.running) begin
+	if (dut.u_periph.perx_rd && dut.u_periph.perx_addr == 6'h2b)
+		$display("  [%0t] HRX rd %06x pc %04x r3 %04x m3 %04x", $time, dut.u_periph.rtx, dut.u_core.pc, dut.u_core.rr[3], dut.u_core.mm[3]);
+	if (trace > 1 && dut.u_periph.hcr != hcr_q)
+		$display("  [%0t] HCR %02x -> %02x pc %04x hsr %02x", $time, hcr_q, dut.u_periph.hcr, dut.u_core.pc, dut.u_periph.hsr);
+	hcr_q <= dut.u_periph.hcr;
+	if (dut.u_periph.perx_wr && dut.u_periph.perx_addr == 6'h2b)
+		$display("  [%0t] HTX wr %06x pc %04x", $time, dut.u_periph.perx_wdata, dut.u_core.pc);
+end
 initial begin
 	#2s $display("FAIL: global timeout"); dump("timeout"); $finish;
 end
