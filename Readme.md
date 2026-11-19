@@ -24,15 +24,39 @@ A NeXTstation Turbo Color core for MiSTer: a 52 MHz 68040, the Turbo chipset,
 12-bit colour at 1120x832, NeXT ROM Rev 3.3 v74. It boots NeXTSTEP 3.3 to the
 colour desktop. Work in progress.
 
-**Release candidate 20261101** (`releases/NeXT-Color_20261101.rbf`, md5
-`4a94cd036754dc40ca418429d3befd8d`, with `releases/MiSTer`, the Main it
-needs for the network): 20261025 plus the Z8530 SCC (serial console and
-MIDI to an MT32-pi, see "Serial and MIDI"). Timing is met on every core
-clock; only the framework's HDMI PLL misses setup by 0.070 ns, with no
-effect seen on hardware. On hardware it boots NeXTSTEP 3.3, logs in over
-serial port A at 9600 baud and plays NeXTSTEP MIDI on an MT32-pi on port B.
+**Release candidate 20261119** (`releases/NeXT-Color_20261119.rbf`, md5
+`ebec2805b6f06861dbb951e6d6423a29`, with `releases/MiSTer`, the Main it
+needs, md5 `b2ff085f9fdfc05fac39313d52218e16`): 20261101 plus faster
+memory and the DSP fix.
+* Memory: the bcopy CPU/memory path, SDRAM bank interleave and paired
+  32-bit writes, and RAM misses started in the same clock. RAM reads are
+  about 13% faster and VRAM reads about 78% faster than the 16 Nov test
+  build.
+* HDMI timing: an `ascal` pipeline fix (`docs/ascal-timing-fix.md`).
+* DSP: the DSP's address adders are back in plain logic (`DSP56K_DSPBLK`
+  off). The DSP-block version broke modulo addressing, so the Music Kit
+  hung at boot and `playscore` made no sound.
 
-The previous release, **20261025** (`releases/NeXT-Color_20261025.rbf`,
+Timing is met on every clock, including HDMI, but the HDMI margin is thin
+at +0.019 ns. Hold slack is +0.117 ns, and the core uses 41,321 ALMs.
+
+On hardware it boots NeXTSTEP 3.3. The DSP boots both NS 3.3 monitors,
+`playscore` plays Music Kit scores live, and DSP memory reads and writes
+pass `dsptest`.
+
+This build was compiled with one extra memory setting that is not in
+`main`: `NA_PG_HI` = `8'h04`, a write-allocate test, measured as a small
+net loss.
+
+The previous release, **20261101** (`releases/NeXT-Color_20261101.rbf`,
+md5 `4a94cd036754dc40ca418429d3befd8d`): 20261025 plus the Z8530 SCC
+(serial console and MIDI to an MT32-pi, see "Serial and MIDI"). Timing is
+met on every core clock; only the framework's HDMI PLL misses setup by
+0.070 ns, with no effect seen on hardware. On hardware it boots NeXTSTEP
+3.3, logs in over serial port A at 9600 baud and plays NeXTSTEP MIDI on an
+MT32-pi on port B.
+
+An earlier release, **20261025** (`releases/NeXT-Color_20261025.rbf`,
 md5 `379f9b27e6c83c7e5beb16bd58e99fae`), met timing on every clock at all
 four corners. On hardware it boots NeXTSTEP 3.3 (3 of 3), BenchPress
 scores Dhrystone 243, Integer 287, Floating Point 142, the DSP plays mu-law
@@ -61,7 +85,7 @@ up on eth0.
 
 ## Installing
 
-1. **Core**: `releases/NeXT-Color_20261101.rbf` in `_Computer/` (or
+1. **Core**: `releases/NeXT-Color_20261119.rbf` in `_Computer/` (or
    `_Unstable/`); keep the date in the name, as MiSTer's other cores do.
    Load it directly, not through an `.mgl` file (an MGL load once corrupted the
    remembered disk mount, `config/NeXT-Color.s0`).
@@ -74,8 +98,9 @@ up on eth0.
    Troubleshooting).
 3. **Main**: `releases/MiSTer` is the Main for this release: Main_MiSTer
    with the NeXT network fix (the core chooses the interface, `NXTETH02`,
-   `support/next/next_enet.cpp`; offered to MiSTer-devel/Main_MiSTer), built
-   2026-10-24 (About shows v261024), md5 `47d819b06e1ba9044d778f3c519155b6`.
+   `support/next/next_enet.cpp`; offered to MiSTer-devel/Main_MiSTer), with
+   the Ethernet receive queue (branch `next-enet-rxqueue`, 71538b4), md5
+   `b2ff085f9fdfc05fac39313d52218e16`.
    The rest of the NeXT-Color support is merged in the official Main
    (MiSTer-devel/Main_MiSTer #1329); once an official Main release includes
    the network fix too, the stock Main works and this step goes away. Main
