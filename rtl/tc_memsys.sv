@@ -14,6 +14,9 @@
 //============================================================================
 
 module tc_memsys
+#(
+	parameter RAM_HZ = 99000000           // clk_ram: SDRAM refresh spacing
+)
 (
 	input             clk_sys,
 	input             clk_ram,       // 3x clk_sys, same PLL, phase aligned
@@ -37,11 +40,16 @@ module tc_memsys
 	input       [3:0] mem_wp_be,
 	input      [31:0] mem_wp_data,
 	output            mem_wq_room,
+	input             mem_wp_vram,   // the push is a VRAM write (tc_vram's queue)
+	output            mem_vwq_room,
 	output            mem_line_valid,
 	output     [26:4] mem_line_tag,
 	output    [127:0] mem_line_data,
 	output            mem_line_pending,
 	output     [26:4] mem_line_pending_tag,
+	output            mem_vline_ok,       // tc_vram's kept line, clk_sys copy
+	output     [20:4] mem_vline_tag,
+	output    [127:0] mem_vline_data,
 
 	// boot ROM loader (while the machine is held in reset)
 	input             rom_we,
@@ -98,7 +106,7 @@ wire is_vram = (mem_memsel == 2'd2);
 wire        sdr_ack;
 wire [31:0] sdr_rdata;
 
-sdram_beat32 sdr
+sdram_beat32 #(.RAM_HZ(RAM_HZ)) sdr
 (
 	.init      (sdram_init),
 	.clk_sys   (clk_sys),
@@ -117,7 +125,7 @@ sdram_beat32 sdr
 	.line_data_o(mem_line_data),
 	.line_pending_o(mem_line_pending),
 	.line_pending_tag_o(mem_line_pending_tag),
-	.wp_valid  (mem_wp_valid),
+	.wp_valid  (mem_wp_valid && !mem_wp_vram),
 	.wp_addr   (mem_wp_addr),
 	.wp_be     (mem_wp_be),
 	.wp_data   (mem_wp_data),
@@ -188,6 +196,14 @@ tc_vram vram
 	.wdata(mem_wdata),
 	.ack(vram_ack),
 	.rdata(vram_rdata),
+	.wp_valid(mem_wp_valid && mem_wp_vram),
+	.wp_addr(mem_wp_addr[20:2]),
+	.wp_be(mem_wp_be),
+	.wp_data(mem_wp_data),
+	.wq_room(mem_vwq_room),
+	.vl_ok(mem_vline_ok),
+	.vl_tag(mem_vline_tag),
+	.vl_data(mem_vline_data),
 
 	.hreg(hreg),
 	.vreg(vreg),

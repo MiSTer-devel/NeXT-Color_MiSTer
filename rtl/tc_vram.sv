@@ -6,7 +6,8 @@
 //  uses $20000000..$217FFFFF).  Three clock domains:
 //
 //  clk_sys (33 MHz)  the machine's beat port (memsel VRAM): one longword at
-//                    a time, level req, 1-cycle ack.
+//                    a time, level req, 1-cycle ack; writes are posted
+//                    through an eight-entry queue (acked as they enter).
 //  clk_ram (99 MHz)  DDRAM_CLK.  Exactly 3x clk_sys from the same PLL, phase
 //                    aligned (rtl/pll), so the CPU request/done crossing is a
 //                    plain timed multi-rate path (toggles, no synchronisers).
@@ -18,7 +19,8 @@
 //  CPU side (after NeXT_MiSTer rtl/next/next_ddram.sv): a read miss fetches
 //  the aligned 16-byte line (2-beat burst) and keeps it; later reads from
 //  that line are served without DDR3; a write is one beat with byte
-//  enables and updates the kept line.  Byte order: the machine is big
+//  enables and updates the kept line.  Writes are queued (posted) and a
+//  read waits until the queue has drained.  Byte order: the machine is big
 //  endian, DDR3 little endian: bytes are swapped within each 32-bit half,
 //  the even longword in DOUT[31:0].
 //
@@ -52,6 +54,21 @@ module tc_vram
 	output reg        ack,
 	output reg [31:0] rdata,
 
+	// direct write push (clk_sys, tc_machine's store path): one write per
+	// cycle into the queue with no handshake; the caller pushes only while
+	// wq_room was high in the cycle it decided
+	input             wp_valid,
+	input      [20:2] wp_addr,
+	input       [3:0] wp_be,
+	input      [31:0] wp_data,
+	output            wq_room,        // at least two free slots
+
+	// the kept line, copied to clk_sys when a read completes (tc_machine
+	// answers later reads of it in one cycle, like the SDRAM bridge's line)
+	output            vl_ok,          // vl_data holds VRAM line vl_tag
+	output reg [20:4] vl_tag,
+	output reg [127:0] vl_data,
+
 	// video control (clk_sys, quasi-static)
 	input      [31:0] hreg,
 	input      [31:0] vreg,
@@ -82,7 +99,9 @@ module tc_vram
 );
 
 localparam [28:0] VRAM_BASE = 29'h0600_0000;     // byte $30000000 / 8
-localparam  [7:0] FETCH_BURST = 8'd40;           // words per scan-out burst (280 = 7 x 40)
+// words per scan-out burst (280 = 17 x 16 + 8).  Short, so a CPU read
+// waits at most one 16-beat burst behind the scan-out.
+localparam  [7:0] FETCH_BURST = 8'd16;
 
 function [31:0] bswap;
 	input [31:0] x;
@@ -92,29 +111,102 @@ endfunction
 //============================================================================
 // CPU request, clk_sys side
 //============================================================================
-reg        c_req_t = 0;        // toggles once per request
-reg        c_we;
+reg        c_req_t = 0;        // toggles once per read
 reg [20:2] c_addr;
-reg  [3:0] c_be;
-reg [31:0] c_wdata;
 reg        c_busy;
-reg        r_done_t = 0;       // clk_ram: toggles when a request completes
+reg        r_done_t = 0;       // clk_ram: toggles when a read completes
 reg [31:0] r_rdata;
 reg        c_done_seen = 0;
+// the kept CPU line (clk_ram; copied to vl_data on clk_sys, below)
+reg [127:0] line;
+reg  [20:4] line_tag;
+reg         line_valid = 0;
+
+// The posted-write queue (sdram_beat32's FIFO): eight entries on clk_sys,
+// fed by the beat port and by tc_machine's direct push; beat writes are
+// acked as they enter -- a DDR3 VRAM write cannot fault, and nothing else
+// reaches VRAM except through this port.  clk_ram drains them back to back
+// (several per turn against the scan-out) and frees a slot once DDR3 has
+// taken the write and the kept line is updated.  A read waits until the
+// queue is empty, so it sees every earlier write.  Entries are written on
+// clk_sys and read on clk_ram only after the write pointer that publishes
+// them has crossed (wq_pend_n).  The pointers are never reset: queued
+// writes drain across a machine reset.
+wire [54:0] wq_q;
+wire        wq_full, wq_empty;
+reg   [3:0] wq_wp = 0;             // clk_sys: next free slot (bit 3 = wrap)
+reg   [3:0] wq_rp = 0;             // clk_ram: next slot to drain
+// a beat write waits out the cycle a direct push takes the queue
+wire        wq_push_bus = !reset && !wp_valid && req && we && !c_busy && !ack && !wq_full;
+wire        wq_push = wp_valid || wq_push_bus;
+wire [54:0] wq_push_data = wp_valid ? {wp_addr, wp_data, wp_be} : {addr, wdata, be};
+`ifdef VERILATOR
+reg [54:0] wq_mem_model [0:7];
+integer wq_model_i;
+initial for (wq_model_i = 0; wq_model_i < 8; wq_model_i = wq_model_i + 1) wq_mem_model[wq_model_i] = 55'd0;
+always @(posedge clk_sys) if (wq_push) wq_mem_model[wq_wp[2:0]] <= wq_push_data;
+assign wq_q = wq_mem_model[wq_rp[2:0]];
+`else
+altdpram #(
+	.width(55), .widthad(3), .numwords(8),
+	.intended_device_family("Cyclone V"), .ram_block_type("MLAB"),
+	.indata_aclr("OFF"), .wraddress_aclr("OFF"), .wrcontrol_aclr("OFF"),
+	.indata_reg("INCLOCK"), .wraddress_reg("INCLOCK"),
+	.wrcontrol_reg("INCLOCK"), .rdaddress_reg("UNREGISTERED"),
+	.rdcontrol_reg("UNREGISTERED"), .outdata_reg("UNREGISTERED"),
+	.read_during_write_mode_mixed_ports("NEW_DATA")
+) wq_mem (
+	.wren(wq_push), .data(wq_push_data), .wraddress(wq_wp[2:0]),
+	.inclock(clk_sys), .inclocken(1'b1),
+	.rden(1'b1), .rdaddress(wq_rp[2:0]),
+	.wraddressstall(1'b0), .rdaddressstall(1'b0), .byteena(1'b1),
+	.outclock(1'b1), .outclocken(1'b1), .aclr(1'b0), .sclr(1'b0), .q(wq_q)
+);
+`endif
+
+// wq_wp compared with the drain pointer on clk_ram's falling edge ("a
+// published write is waiting"), and wq_rp handed back the same way, then
+// through one clk_sys register that full/empty are computed from (the
+// extra clock only overstates the fill).
+reg        wq_pend_n = 0;
+reg  [3:0] wq_rp_handoff = 0;
+reg  [3:0] wq_rp_sys = 0;
+always @(negedge clk_ram) begin
+	wq_pend_n     <= (wq_wp != wq_rp);
+	wq_rp_handoff <= wq_rp;
+end
+always @(posedge clk_sys) wq_rp_sys <= wq_rp_handoff;
+assign wq_full  = (wq_wp[2:0] == wq_rp_sys[2:0]) && (wq_wp[3] != wq_rp_sys[3]);
+assign wq_empty = (wq_wp == wq_rp_sys);
+// two free slots: one for a push already decided, one for this decision
+wire  [3:0] wq_used = wq_wp - wq_rp_sys;
+assign wq_room  = (wq_used <= 4'd6);
+
+// The clk_sys copy of the kept line (vl_*).  Loaded from the clk_ram line
+// when a read completes: the engine set line and r_done_t on the same
+// clk_ram edge, and a read is only sent with the queue empty and blocks the
+// beat port, so nothing changes the line before the copy (the same timed
+// multi-rate path as r_rdata).  A write queued to that line drops the copy
+// as it enters the queue; vl_ok also masks a direct push in its push cycle,
+// so a read right behind a store never sees the old data.
+reg         vl_valid = 0;
+wire [20:4] wq_push_tag = wp_valid ? wp_addr[20:4] : addr[20:4];
+assign vl_ok = vl_valid && !(wp_valid && wp_addr[20:4] == vl_tag);
 
 always @(posedge clk_sys) begin
 	ack <= 0;
+	if (wq_push) wq_wp <= wq_wp + 4'd1;
+	if (wq_push_bus) ack <= 1;
+	if (wq_push && wq_push_tag == vl_tag) vl_valid <= 0;
 	if (reset) begin
 		c_busy <= 0;
 		c_done_seen <= r_done_t;
+		vl_valid <= 0;
 	end
 	else begin
 		if (!c_busy) c_done_seen <= r_done_t;
-		if (req && !c_busy && !ack) begin
-			c_we    <= we;
+		if (req && !we && !c_busy && !ack && wq_empty) begin
 			c_addr  <= addr;
-			c_be    <= be;
-			c_wdata <= wdata;
 			c_req_t <= ~c_req_t;
 			c_busy  <= 1;
 		end
@@ -123,6 +215,9 @@ always @(posedge clk_sys) begin
 			c_busy <= 0;
 			ack    <= 1;
 			rdata  <= r_rdata;
+			vl_data  <= line;
+			vl_tag   <= c_addr[20:4];
+			vl_valid <= !(wq_push && wq_push_tag == c_addr[20:4]);
 		end
 	end
 end
@@ -222,10 +317,7 @@ always @(posedge clk_ram) begin
 	end
 end
 
-// the kept CPU line
-reg [127:0] line;
-reg  [20:4] line_tag;
-reg         line_valid = 0;
+// the kept CPU line (declared with the clk_sys request state above)
 
 // fetch engine: fetches whole lines, in bursts, into the line buffer half
 // line[0].  Allowed up to two lines past the last one displayed (none at
@@ -253,6 +345,10 @@ reg  [7:0] e_beats = 0;             // beats left in the burst
 reg        e_turn = 0;              // 1: the CPU goes next when both wait
 reg        e_beat = 0;              // CPU line fill: second beat
 reg  [1:0] e_want = 0;
+reg  [2:0] e_wcnt = 0;              // queued writes taken in this CPU turn
+reg [20:2] h_addr;                  // the queued write in flight
+reg [31:0] h_wdata;
+reg  [3:0] h_be;
 
 wire cpu_pend = (c_req_t != r_req_seen);
 
@@ -262,6 +358,14 @@ initial begin
 	DDRAM_BURSTCNT = 8'd1;
 end
 
+// synthesis translate_off
+always @(posedge clk_ram)
+	if (!ddr_hold && e_state == E_CPU_RD && DDRAM_DOUT_READY && e_beat &&
+	    DDRAM_ADDR[17:1] != c_addr[20:4]) begin
+		$display("FAIL: tc_vram: DDRAM_ADDR %h no longer holds the read's line %h", DDRAM_ADDR, c_addr[20:4]);
+		$finish;
+	end
+// synthesis translate_on
 always @(posedge clk_ram) begin
 	lb_we <= 0;
 	if (!DDRAM_BUSY) begin
@@ -289,47 +393,26 @@ always @(posedge clk_ram) begin
 			f_word    <= 0;
 			f_base    <= 0;
 		end
+		else if (wq_pend_n && (e_turn || !f_want)) begin
+			// a queued write; the CPU keeps its turn for up to eight of them
+			e_wcnt         <= e_wcnt + 3'd1;
+			if (e_wcnt == 3'd7) e_turn <= 0;
+			h_addr         <= wq_q[54:36];
+			h_wdata        <= wq_q[35:4];
+			h_be           <= wq_q[3:0];
+			DDRAM_ADDR     <= VRAM_BASE + {10'd0, wq_q[54:37]};
+			DDRAM_BURSTCNT <= 8'd1;
+			DDRAM_DIN      <= {2{bswap(wq_q[35:4])}};
+			DDRAM_BE       <= wq_q[36] ? {wq_q[0], wq_q[1], wq_q[2], wq_q[3], 4'b0000}
+			                           : {4'b0000, wq_q[0], wq_q[1], wq_q[2], wq_q[3]};
+			DDRAM_WE       <= 1;
+			e_state        <= E_CPU_WR;
+		end
 		else if (cpu_pend && (e_turn || !f_want)) begin
+			// a read (the queue is empty: clk_sys only sends one then)
 			r_req_seen <= c_req_t;
 			e_turn     <= 0;
-			if (c_we) begin
-				DDRAM_ADDR     <= VRAM_BASE + {10'd0, c_addr[20:3]};
-				DDRAM_BURSTCNT <= 8'd1;
-				DDRAM_DIN      <= {2{bswap(c_wdata)}};
-				DDRAM_BE       <= c_addr[2] ? {c_be[0], c_be[1], c_be[2], c_be[3], 4'b0000}
-				                            : {4'b0000, c_be[0], c_be[1], c_be[2], c_be[3]};
-				DDRAM_WE       <= 1;
-				if (line_valid && line_tag == c_addr[20:4]) begin
-					case (c_addr[3:2])
-					2'd0: begin
-						if (c_be[3]) line[127:120] <= c_wdata[31:24];
-						if (c_be[2]) line[119:112] <= c_wdata[23:16];
-						if (c_be[1]) line[111:104] <= c_wdata[15:8];
-						if (c_be[0]) line[103:96]  <= c_wdata[7:0];
-					end
-					2'd1: begin
-						if (c_be[3]) line[95:88] <= c_wdata[31:24];
-						if (c_be[2]) line[87:80] <= c_wdata[23:16];
-						if (c_be[1]) line[79:72] <= c_wdata[15:8];
-						if (c_be[0]) line[71:64] <= c_wdata[7:0];
-					end
-					2'd2: begin
-						if (c_be[3]) line[63:56] <= c_wdata[31:24];
-						if (c_be[2]) line[55:48] <= c_wdata[23:16];
-						if (c_be[1]) line[47:40] <= c_wdata[15:8];
-						if (c_be[0]) line[39:32] <= c_wdata[7:0];
-					end
-					default: begin
-						if (c_be[3]) line[31:24] <= c_wdata[31:24];
-						if (c_be[2]) line[23:16] <= c_wdata[23:16];
-						if (c_be[1]) line[15:8]  <= c_wdata[15:8];
-						if (c_be[0]) line[7:0]   <= c_wdata[7:0];
-					end
-					endcase
-				end
-				e_state <= E_CPU_WR;
-			end
-			else if (line_valid && line_tag == c_addr[20:4]) begin
+			if (line_valid && line_tag == c_addr[20:4]) begin
 				r_rdata  <= (c_addr[3:2] == 2'd0) ? line[127:96] :
 				            (c_addr[3:2] == 2'd1) ? line[95:64]  :
 				            (c_addr[3:2] == 2'd2) ? line[63:32]  : line[31:0];
@@ -349,6 +432,7 @@ always @(posedge clk_ram) begin
 		else if (f_want) begin
 			// one burst of the line
 			e_turn         <= 1;
+			e_wcnt         <= 0;
 			f_active       <= 1;
 			DDRAM_ADDR     <= VRAM_BASE + {10'd0, f_base} + {20'd0, f_word};
 			DDRAM_BURSTCNT <= f_burst;
@@ -360,8 +444,37 @@ always @(posedge clk_ram) begin
 		end
 	end
 	E_CPU_WR: if (!DDRAM_BUSY) begin
-		r_done_t <= ~r_done_t;
-		e_state  <= E_IDLE;
+		// DDR3 has it: update the kept line, free the slot
+		if (line_valid && line_tag == h_addr[20:4]) begin
+			case (h_addr[3:2])
+			2'd0: begin
+				if (h_be[3]) line[127:120] <= h_wdata[31:24];
+				if (h_be[2]) line[119:112] <= h_wdata[23:16];
+				if (h_be[1]) line[111:104] <= h_wdata[15:8];
+				if (h_be[0]) line[103:96]  <= h_wdata[7:0];
+			end
+			2'd1: begin
+				if (h_be[3]) line[95:88] <= h_wdata[31:24];
+				if (h_be[2]) line[87:80] <= h_wdata[23:16];
+				if (h_be[1]) line[79:72] <= h_wdata[15:8];
+				if (h_be[0]) line[71:64] <= h_wdata[7:0];
+			end
+			2'd2: begin
+				if (h_be[3]) line[63:56] <= h_wdata[31:24];
+				if (h_be[2]) line[55:48] <= h_wdata[23:16];
+				if (h_be[1]) line[47:40] <= h_wdata[15:8];
+				if (h_be[0]) line[39:32] <= h_wdata[7:0];
+			end
+			default: begin
+				if (h_be[3]) line[31:24] <= h_wdata[31:24];
+				if (h_be[2]) line[23:16] <= h_wdata[23:16];
+				if (h_be[1]) line[15:8]  <= h_wdata[15:8];
+				if (h_be[0]) line[7:0]   <= h_wdata[7:0];
+			end
+			endcase
+		end
+		wq_rp   <= wq_rp + 4'd1;
+		e_state <= E_IDLE;
 	end
 	E_CPU_RD: if (DDRAM_DOUT_READY) begin
 		if (!e_beat) begin
@@ -372,7 +485,13 @@ always @(posedge clk_ram) begin
 		else begin
 			line[63:0] <= {bswap(DDRAM_DOUT[31:0]), bswap(DDRAM_DOUT[63:32])};
 			if (e_want[1]) r_rdata <= e_want[0] ? bswap(DDRAM_DOUT[63:32]) : bswap(DDRAM_DOUT[31:0]);
-			line_tag   <= c_addr[20:4];
+			// the line's address from DDRAM_ADDR (loaded from c_addr when
+			// the read was issued, untouched until E_IDLE), not c_addr
+			// itself: that copy was a bare clk_sys -> clk_ram register
+			// path, the shortest crossing in the core, and failed hold on
+			// some placements (the copy was safe -- c_addr is held while
+			// c_busy -- but the analysis cannot know it)
+			line_tag   <= DDRAM_ADDR[17:1];
 			line_valid <= 1;
 			r_done_t   <= ~r_done_t;
 			e_state    <= E_IDLE;

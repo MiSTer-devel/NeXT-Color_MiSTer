@@ -51,7 +51,7 @@ wire          in_win = (addr[28:AW] == BASE[28:AW]);
 // The Ethernet mailbox (Main_MiSTer support/next/next_enet.cpp: ARM byte
 // $1FF00000, 16 KB = word $03FE0000..$03FE07FF), written by the core's
 // next_enet_bridge.  In place of Main's daemon the model plays a network
-// that echoes: each frame the guest sends (TX_WPTR write) is copied into
+// that echoes (whatever the published NET_MODE): each frame the guest sends (TX_WPTR write) is copied into
 // the next RX slot and RX_WPTR advanced, while the RX ring has room.
 localparam [28:0] MBOX = 29'h03FE_0000;
 reg  [63:0] mb [0:2047];
@@ -80,6 +80,8 @@ always @(posedge clk) begin
 	if (!busy) begin
 		if (we && in_mb) begin
 			mb[ma] <= din;
+			if (ma == 11'd0) $display("[ENET] MAGIC %016X", din);
+			if (ma == 11'd5) $display("[ENET] NET_MODE %016X", din);
 			if (ma == 11'd3) $display("[ENET] RX slot consumed by the core (RX_RPTR %0d)", din);
 			if (ma == 11'd1 && din != 64'd0) begin
 				// TX_WPTR: frame din-1 is in TX slot (din-1)&3

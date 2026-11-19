@@ -11,12 +11,16 @@
 //
 //  DDR3 byte layout (ARM physical 0x1FF00000, the window Main maps
 //  with shmem_map; 64-bit-word Avalon address 0x03FE0000):
-//    +0x0000  MAGIC     "NXTETH01" (FPGA writes at reset release)
+//    +0x0000  MAGIC     "NXTETH02" (FPGA writes at reset release, last)
 //    +0x0008  TX_WPTR   FPGA increments per transmitted frame
 //    +0x0010  RX_WPTR   ARM increments per received frame
 //    +0x0018  RX_RPTR   FPGA increments per consumed frame
 //    +0x0020  GUEST_MAC bit63 = valid, bits[47:0] = station address
 //                       (FPGA republishes on NodeID writes)
+//    +0x0028  NET_MODE  bit63 = valid, bits[2:0] = mode for Main's daemon
+//                       (0 off, 1 eth0, 2 eth1, 3 macvlan, 4 tap).  Only
+//                       under "NXTETH02"; with "NXTETH01" Main reads the
+//                       mode from status[54:52].
 //    +0x0800  TX slots: 4 x 2048 bytes
 //    +0x2800  RX slots: 4 x 2048 bytes
 //    slot: u64 header, bits[10:0] = length; frame bytes from +8,
@@ -33,6 +37,7 @@ module next_enet_bridge #(parameter CLK_HZ = 100000000)
 	input             clk,
 	input             reset,
 	input             enable,        // effective external link is connected
+	input       [2:0] net_mode,      // published as NET_MODE (Main's NB_MODE_ value)
 
 	// frame streaming to/from next_enet_dma
 	input             btx_req,
@@ -67,11 +72,12 @@ localparam [28:0] A_TXWPTR  = BASE + 29'h001;
 localparam [28:0] A_RXWPTR  = BASE + 29'h002;
 localparam [28:0] A_RXRPTR  = BASE + 29'h003;
 localparam [28:0] A_MAC     = BASE + 29'h004;
+localparam [28:0] A_MODE    = BASE + 29'h005;  // byte +0x28
 localparam [28:0] A_TXSLOT  = BASE + 29'h100;  // byte +0x800
 localparam [28:0] A_RXSLOT  = BASE + 29'h500;  // byte +0x2800
 localparam [28:0] SLOT_STRIDE = 29'h100;       // 2048 bytes
 
-localparam [63:0] MAGIC = 64'h4E58544554483031;  // "NXTETH01"
+localparam [63:0] MAGIC = 64'h4E58544554483032;  // "NXTETH02": NET_MODE is valid
 
 // poll the RX write pointer roughly every 200 microseconds
 localparam POLL = CLK_HZ / 1000000 * 200;
@@ -99,7 +105,8 @@ localparam S_OFF        = 5'd0,
 	       S_RX_STREAM  = 5'd16,
 	       S_RX_RPTR    = 5'd17,
 	       S_MAC        = 5'd18,
-	       S_WAIT       = 5'd19;
+	       S_WAIT       = 5'd19,
+	       S_INIT_MODE  = 5'd20;
 
 reg [4:0] st, ret;
 
@@ -185,7 +192,7 @@ always @(posedge clk) begin
 		end
 
 		// Invalidate the old mailbox generation first, then reset every
-		// shared ring pointer.  MAGIC is published last, after the MAC,
+		// shared ring pointer.  MAGIC is published last, after the MAC and the mode,
 		// so neither side can consume stale DDR contents after a reset.
 		S_INIT_CLEAR: begin
 			tx_wptr <= 0;
@@ -201,12 +208,13 @@ always @(posedge clk) begin
 			mac_last <= guest_mac;
 			mac_dirty <= 0;
 			if (enable && !disable_pending)
-				ddr_op(1, A_MAC, {1'b1, 15'd0, guest_mac}, S_INIT_MAGIC);
+				ddr_op(1, A_MAC, {1'b1, 15'd0, guest_mac}, S_INIT_MODE);
 			else begin
 				disable_pending <= 0;
 				ddr_op(1, A_MAC, {1'b1, 15'd0, guest_mac}, S_OFF);
 			end
 		end
+		S_INIT_MODE:  ddr_op(1, A_MODE, {1'b1, 60'd0, net_mode}, S_INIT_MAGIC);
 		S_INIT_MAGIC: ddr_op(1, A_MAGIC, MAGIC, S_IDLE);
 
 		S_IDLE: begin

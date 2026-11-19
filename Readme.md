@@ -2,62 +2,93 @@
 
 ## General description
 
-A NeXTstation Turbo Color core for MiSTer: a 33 MHz 68040, the Turbo chipset,
+A NeXTstation Turbo Color core for MiSTer: a 52 MHz 68040, the Turbo chipset,
 12-bit colour at 1120x832, NeXT ROM Rev 3.3 v74. It boots NeXTSTEP 3.3 to the
 colour desktop. Work in progress.
 
+Changes since 20261010:
+* the CPU at 52 MHz (the pipelined AP68040 on a 26 MHz machine bus) with
+  instruction and copyback data caches;
+* the DSP56001 in the FPGA (the Falcon_MiSTer DSP core), for Sound Kit and
+  Music Kit;
+* a Z8530 SCC with both serial ports (the Apple-Lisa_MiSTer chip): a
+  serial login console on the MiSTer UART, and NeXTSTEP MIDI out to an
+  MT32-pi;
+* faster memory: the bcopy CPU/memory path, SDRAM bank interleave and
+  paired 32-bit writes, and RAM misses started in the same clock;
+* an `ascal` pipeline fix for HDMI timing (`docs/ascal-timing-fix.md`);
+* the standard OSD layout (settings applied at reset), Power key and NMI
+  buttons, Swap Alt/Win keys, a Network interface setting, and memory no
+  larger than the SDRAM module.
+
+The current build meets timing on every clock, including HDMI, but the
+HDMI margin is thin (+0.019 ns setup, +0.117 ns hold, 41,321 ALMs). On
+hardware it boots NeXTSTEP 3.3. The DSP boots both NS 3.3 monitors,
+`playscore` plays Music Kit scores live, and DSP memory reads and writes
+pass `dsptest`.
+
 | Part | State |
 |---|---|
-| CPU | 68040 at 33 MHz (the AP68040 core of the MacQuadra800 core), FPU, MMU. NWBench Dhrystone 15.1 MIPS |
-| Memory | 16, 32, 64 (default) or 128 MB in SDRAM |
+| CPU | 68040 at 52 MHz on a 26 MHz machine bus (the pipelined AP68040), FPU, MMU. BenchPress Dhrystone 255 (25 MHz NeXTstation Color = 100) |
+| Memory | 16, 32 (default), 64 or 128 MB in SDRAM, no more than the SDRAM module |
 | Video | 1120x832 at 68.4 Hz, 12-bit colour (Bt463 palette, TMC timing) |
 | Keyboard and mouse | PS/2 keyboard and mouse as the NeXT keyboard (KMS) |
 | SCSI | Two hard disks and a CD-ROM drive (images on the SD card) |
 | Floppy | 2.88 MB drive (720K, 1.44M and 2.88M images) |
 | Ethernet | On the MiSTer's LAN (optional) |
 | Sound out | 16-bit stereo, 44.1 and 22.05 kHz |
-| DSP56001 | Not in this release (see "Sound and DSP") |
+| DSP56001 | In the FPGA, 13 MIPS, 8K words of external RAM (see "Sound and DSP"); Sound Kit and Music Kit work |
+| Serial ports | Z8530 SCC, ports A and B (see "Serial and MIDI"): a 9600 baud login console on the MiSTer UART, MIDI to an MT32-pi |
 | Sound in, DSP serial port, printer, ADB | Not present |
 
 * Design decisions: `docs/DECISIONS.md`. Hand-off state: the newest
   `RESUME-*.md`. ROM analysis (the RTL spec):
   `rom-dissassembly/hardware-summary.md`. Hardware references: `RESOURCES.md`.
-  Release builds: `releases/`; their notes: `RELEASES.md`.
+  Release builds: `releases/` (`NeXT-Color_<date>.rbf`, the newest is the
+  one to use; `boot0.rom`).
 
 ## Installing
 
-1. **Core**: the rbf in `_Unstable/` (or `_Computer/`) as `NeXT-Color.rbf`.
+1. **Core**: the newest `releases/NeXT-Color_<date>.rbf` in `_Computer/` (or
+   `_Unstable/`); keep the date in the name, as MiSTer's other cores do.
    Load it directly, not through an `.mgl` file (an MGL load once corrupted the
    remembered disk mount, `config/NeXT-Color.s0`).
 2. **Boot ROM**: `releases/boot0.rom` (NeXT ROM Rev 3.3 v74, the NeXTstation
    Turbo's ROM) in `games/NeXT-Color/` -- the folder name is exactly the core's
    name, with a hyphen. Main loads `boot0.rom`, or `boot.rom` if there is no
-   `boot0.rom`, each time the core starts; the OSD's "Load boot ROM" loads
-   another one. Do not copy the mono NeXT core's files into this folder: its
+   `boot0.rom`, each time the core starts; the OSD's "Load ROM" loads
+   another one for that session. Do not copy the mono NeXT core's files into this folder: its
    `boot1.rom` is a 68030 ROM (Rev 2.5), which this core cannot run (see
    Troubleshooting).
-3. **Main**: this core needs the `next-color` build of Main_MiSTer
-   (`releases/MiSTer`, the build for this release). The NeXT-Color support
-   is merged in the official Main (MiSTer-devel/Main_MiSTer #1329); once an
-   official Main release includes it, the stock Main works and this step goes
-   away. It serves the SCSI
+3. **Main**: the NeXT-Color support is merged in the official Main
+   (MiSTer-devel/Main_MiSTer #1329). The network additionally needs the
+   NeXT network fix (the core chooses the interface, `NXTETH02`,
+   `support/next/next_enet.cpp`) and the Ethernet receive queue, offered to
+   MiSTer-devel/Main_MiSTer; until an official Main release includes them,
+   build Main_MiSTer with them. Main serves the SCSI
    target responses, the CD-ROM images, the Ethernet bridge and the battery
    clock. A stock Main boots to `NeXT>` but finds no disk ("No SCSI disk").
-   Replace `/media/fat/MiSTer` with it (keep the old one, for example as
-   `MiSTer.stock`), then `sync` and reboot. It runs the other cores as the
-   stock Main does.
+   To use a Main you built, replace `/media/fat/MiSTer` with it (keep the
+   old one, for example as `MiSTer.stock`), then `sync` and reboot. It runs
+   the other cores as the stock Main does.
+
+   The network needs a Main that reads the network interface from the core
+   (`NXTETH02`, Main_MiSTer `support/next/next_enet.cpp`, 2026-10 or later).
+   An older Main runs everything else, but the network stays off.
 
    Check it: load the core, open the OSD, press right, open **About**. The
    MiSTer version must be **v261009** or later. Anything older means the stock Main is
    running.
 
-   A `main=MiSTer_NeXT-Color` line in the core's `MiSTer.ini` section (the
-   Main as a second file, used for this core only) also works with
+   Or, to leave the stock Main in place, copy the built one as
+   `/media/fat/MiSTer_NeXT-Color` and add a `main=MiSTer_NeXT-Color` line to
+   the core's `[NeXT-Color]` section in `MiSTer.ini` (the Main as a second
+   file, used for this core only). That works with
    20261010 and later; the cores before stayed black when loaded that way
    (see Troubleshooting).
 4. **Disk**: a NeXTSTEP disk image (`.hda`, `.vhd` or `.img`; rename a `.dd`
-   image to `.img`) in the OSD's "SCSI disk 0" slot. "Boot device" is "SCSI
-   disk" by default, so the ROM boots it. Images are written to: work on a
+   image to `.img`) in the OSD's "Pri. disk (ID 0)" slot. "Boot device" is
+   "SCSI disk" by default, so the ROM boots it. Images are written to: work on a
    copy.
 5. **Display**: give the core its own 1080p section in `MiSTer.ini` (next
    section).
@@ -68,22 +99,40 @@ the disk image is open for writing.
 
 ## OSD menu
 
-The 2026-10 core reordered Memory, Boot device and Scale so that the defaults
-are 32 MB, SCSI disk and V-Integer, and so it forgets the OSD settings saved by older releases
-once: set Memory, Ethernet and the display options again after updating.
+The menu follows the MiSTer OSD standard
+(danifunker/hp9000-715_MiSTer `docs/osd-standard.md`). The top page:
 
 | Entry | What it does |
 |---|---|
-| SCSI disk 0 / SCSI disk 1 | Hard disk images (`.hda`, `.vhd`, `.img`) for SCSI targets 0 and 1; remembered and mounted again when the core starts |
-| CD-ROM | A disc image (`.iso`, `.cue`/`.bin`, `.chd`) in the CD-ROM drive, SCSI target 3; not remembered |
+| Pri. disk (ID 0) / Disk (ID 1) | Hard disk images (`.hda`, `.vhd`, `.img`) for SCSI targets 0 and 1. Target 0 is the boot disk |
+| CD-ROM (ID 3) | A disc image (`.iso`, `.cue`/`.bin`, `.chd`) in the CD-ROM drive, SCSI target 3 |
 | Floppy | A floppy image (`.img`, `.ima`, `.flp`, `.vfd`, `.fd`) in the floppy drive |
-| Memory | 32 MB (default), 64 MB, 128 MB or 16 MB. The MiSTer's SDRAM module must be at least as large: 64 MB needs a 64 or 128 MB module, 128 MB (the Turbo's maximum, 4 x 32 MB) a 128 MB module. More memory than the module has makes NeXTSTEP panic |
-| Power-on self test | On: the ROM tests the machine at power-on; Off: faster start |
-| Boot device | SCSI disk (default), Prompt (stay at `NeXT>`), Network or Floppy; written to the NVRAM boot command |
-| Ethernet | Disconnected (no cable) or Connected (on the MiSTer's LAN) |
-| Aspect ratio, Scale | How the scaler fits the picture (see Display) |
-| Load boot ROM | Load a different ROM file |
-| Reset | Reset the machine; the disk mounts stay. The NVRAM is not kept: at power-on and reset it gets a default image with the OSD's boot device |
+| Load ROM | Load a different boot ROM for this session; the next start loads `boot0.rom` again |
+| Memory | 32MB (default), 64MB, 128MB or 16MB. The machine never gets more than the MiSTer's SDRAM module has: 128MB on a 32 MB module runs as 32 MB |
+| Network interface | eth0 (default), None, eth1, macvlan or tap0: what the Turbo's Ethernet is wired to (see Network). None is a machine without a cable |
+| Machine > | P1: the **Power key** (NeXTSTEP's power-off panel, as F10) and **NMI (monitor)** (the ROM monitor, as F11) |
+| Video > | P2: **Aspect ratio** and **Scale**, how the scaler fits the picture (see Display) |
+| Input > | P3: **Swap Alt/Win keys** (see Keyboard and mouse) |
+| Serial & MIDI > | P4: **Serial port on UART** (A (default) or B: the SCC port wired to the MiSTer UART) and the MT32-pi settings (see Serial and MIDI) |
+| Advanced > | P5: **Boot device** (SCSI disk (default), Prompt = stay at `NeXT>`, Network or Floppy; written to the NVRAM boot command) and **Self test** (On: the ROM tests the machine at power-on; Off: a faster start) |
+| Changes pending | Shown while a changed setting is waiting for Apply and reset |
+| Apply and reset | Reset the machine with the current settings and close the OSD; the disk mounts stay |
+
+**When settings take effect.** The disks and Input act at once. Everything
+else (Memory, Network interface, Video, Advanced) is taken at the next reset:
+Apply and reset, the MiSTer's reset button or the next core start. Until then
+"Changes pending" shows. The keyboard's reset (Win+Alt+keypad *) restarts
+the machine with the settings it is running. The NVRAM is not kept: at
+power-on and at each reset it gets a default image with the OSD's boot device.
+
+All disk slots, the CD-ROM and the floppy included, are remembered and
+mounted again when the core starts.
+
+**Updating from an older release.** The 2026-10 menu keeps the saved
+settings: Memory, Self test, Boot device, Aspect ratio and Scale carry over.
+The network is the exception: the old "Ethernet" switch is gone, and
+"Network interface" starts at eth0 for everyone, so a core that was
+"Disconnected" is now on the LAN. Pick None once to turn it off.
 
 ## Display: use 1080p
 
@@ -149,8 +198,9 @@ menu, and there is no composite or S-Video output (see Building).
   NeXTSTEP finds it at boot ("PreviousCD-ROM ... as sd1 at sc0 target 3") and
   a disc mounted in the OSD while NeXTSTEP runs appears in the Workspace
   (tested with NeXT software CDs; NeXT UFS discs mount as `/<volume name>`).
-  The mount is not remembered.
-* **Floppy**: the 82077 and a 2.88 MB drive. NeXTSTEP attaches it as `fd0`;
+  The mount is remembered, like the disks'.
+* **Floppy**: the 82077 and a 2.88 MB drive (remembered too: a writable
+  image stays in the drive at the next start). NeXTSTEP attaches it as `fd0`;
   the Workspace's Initialize formats an image at 2.88 MB, and files written
   there land in the image on the SD card. NeXTSTEP 3.3 does not read a DOS
   file system on a 2.88 MB disk (its sectors read correctly).
@@ -159,23 +209,78 @@ menu, and there is no composite or S-Video output (see Building).
 
 ## Network
 
-Set the OSD **Ethernet** to "Connected": the Turbo's 7213 Ethernet is bridged
-to the MiSTer's wired eth0 (shared with Linux; the guest's own MAC,
-00:00:0F:12:34:56, is filtered). NeXTSTEP 3.3 has no DHCP client: its
-`-AUTOMATIC-` setting is BOOTP, which most routers do not answer, so give it a
-static address, for example as root:
+The OSD's **Network interface** chooses what the Turbo's 7213 Ethernet is
+wired to; it takes effect at the next reset (Apply and reset):
+
+| Value | |
+|---|---|
+| eth0 (default) | The MiSTer's wired eth0, shared with Linux; the guest gets the frames for its own MAC, the one in `boot0.rom` |
+| None | No cable |
+| eth1 | A second wired interface, if the MiSTer has one (else off) |
+| macvlan | A macvlan interface on eth0 |
+| tap0 | A tap interface, for a bridge set up on the Linux side |
+
+This needs a Main that reads the interface from the core (Installing, step
+3). NeXTSTEP 3.3 has no DHCP client: its `-AUTOMATIC-` setting is BOOTP,
+which most routers do not answer, so give it a static address, for example
+as root:
 
 ```
 ifconfig en0 192.168.1.38 netmask 255.255.255.0 up
 ```
 
 or permanently with HostManager, or `INETADDR`, `IPNETMASK` and `ROUTER` in
-`/etc/hostconfig`. "Disconnected" is a machine without a cable.
+`/etc/hostconfig`.
+
+### Two MiSTers on one network: give each NeXT its own MAC
+
+The NeXT's Ethernet address lives in the boot ROM, and every install of
+`releases/boot0.rom` has the same one, 00:00:0F:12:34:56. Two MiSTers running
+the core on the same LAN are then two machines with one MAC: switches send
+each one's traffic to whichever port last spoke, ARP caches and DHCP see one
+host, and both NeXTs' connections drop and stall. A cloned SD card or disk
+image carries the clash with it.
+
+`scripts/set_rom_mac.py` fixes this on the MiSTer itself: it sets the ROM's
+MAC to the NeXT OUI 00:00:0F plus the last three bytes of that MiSTer's eth0
+MAC, so each MiSTer gets a different, stable NeXT address. Python 3 standard
+library only. Copy it to `/media/fat/Scripts/` and run it over ssh:
+
+```
+python3 /media/fat/Scripts/set_rom_mac.py --check     # MAC and CRC of each NeXT boot0.rom
+python3 /media/fat/Scripts/set_rom_mac.py --dry-run   # what would change, nothing written
+python3 /media/fat/Scripts/set_rom_mac.py             # patch
+```
+
+| option | |
+|---|---|
+| `--check` | only print each ROM's MAC and whether its CRC is valid |
+| `--dry-run` | print the old and new MAC and CRC, write nothing |
+| (none) | patch: timestamped `boot0.rom.bak-YYYYmmdd-HHMMSS` next to the ROM, atomic write, read-back check; a ROM that already has the MAC is left alone |
+| `--rom PATH` | patch only `PATH` (repeatable); default: every `games/NeXT*/boot0.rom` in Main's search order (`/media/usb0`..`usb5`, `network`, `fat/cifs`, `fat`; the first one is the ROM the core loads) |
+| `--mac XX:XX:XX` | use these last three bytes instead of eth0's |
+| `--force` | patch a ROM whose existing CRC is bad (it refuses by default) |
+
+The ROM format: the MAC is bytes 8-13, and bytes 22-25 hold the CRC-32 (the
+zlib one) of bytes 0-21, big endian. The ROM checks it at reset; a ROM patched
+without fixing the CRC hangs with the floppy LED flashing, so do not hex-edit
+the MAC by hand.
+
+The core reads `boot0.rom` when it is loaded: reload the core (or reboot the
+MiSTer) for the new MAC to take effect; NeXTSTEP shows it at boot as
+`en0: Ethernet address 00:00:0f:...`. Then update anything keyed to the old
+MAC: the router's DHCP reservation or static lease for the NeXT, and
+the `hardware ethernet` lines of a `dhclient.conf` on the NeXT, if one was
+installed.
 
 ## Keyboard and mouse
 
 A PS/2 (or USB, through the MiSTer) keyboard and mouse act as the NeXT keyboard
-and mouse. The Command keys are the Windows keys; the volume keys work. At the
+and mouse. The Command keys are the Windows keys and the Alternate keys the
+Alt keys; **Swap Alt/Win keys** (Input page, acts at once) swaps them, so the
+key next to the space bar is Command, as on a NeXT keyboard. The volume keys
+work. F10 is the power key and F11 enters the ROM monitor (NMI); the Machine
+page has the same two as buttons. Win+Alt+keypad * resets the machine. At the
 login window move the mouse once before typing, the first keys after boot can
 be lost.
 
@@ -185,19 +290,45 @@ be lost.
   stereo, 44.1 kHz; 22.05 kHz sounds are doubled as on the real machine;
   the keyboard's volume keys work). There is no sound input (no microphone
   CODEC) and no DSP port (the DSP's serial ports have no connector here).
-* **No DSP56001 in this release.** Its registers read 0, as in the releases
-  before the DSP work, so programs that need the DSP -- the Music Kit
-  (`playscore`, Music Kit applications) and sounds that NeXTSTEP decodes on
-  the DSP -- do not work. 16-bit linear sounds (the system beeps, `sndplay`
-  of 16-bit files) play.
-* The DSP work is parked, not dropped: the source has a DSP56001 running on
-  the MiSTer's ARM (the Previous emulator's interpreter in Main, branch
-  `next-color`, behind the FPGA's host port `rtl/tc_dsp.sv`), switched off by
-  `NEXT_NO_DSP` in `NeXT-Color.qsf`. It plays the Sound Kit's DSP sounds and
-  renders some Music Kit scores (`playscore -w`), but at an eighth of a real
-  56001's speed NeXTSTEP's sound driver resets it partway through heavier
-  scores. Where it stands: `docs/DECISIONS.md` ("Sound and DSP") and the newest
-  `RESUME-*.md`.
+* **The DSP56001 runs in the FPGA** (`rtl/tc_dsp56k.sv`, `rtl/dsp56k`): the
+  Falcon_MiSTer DSP56001 core (apolkosnik/Falcon_MiSTer `rtl/falcon/dsp`,
+  checked against Hatari instruction by instruction) with the NeXT's host
+  port, DSP DMA (packed and unpacked), SCR2 reset / start mode / memory
+  enable, IRQB at a DMA block end and the TXD interrupt.  It runs at the
+  machine clock, one instruction cycle per two clocks: 13 MIPS at
+  26 MHz, a little above a real 25 MHz 56001's 12.5 MIPS.  External RAM: the standard 8K
+  words (24 KB); no 96 KB expansion.  On hardware (2026-10-23 to 10-25)
+  NeXTSTEP boots it, sndplay plays mu-law and ATC-compressed sounds through
+  it, and playscore plays Music Kit scores (CoventryCarol, FugueCMajor,
+  WTC1, Pachelbel, Vivaldi).
+* The DSP on the ARM (Previous's interpreter in Main, `next-color`, behind
+  `rtl/tc_dsp.sv`) is still in the source: `NEXT_DSP_ARM` in
+  `NeXT-Color.qsf` selects it.  `NEXT_NO_DSP` leaves the DSP out.
+
+## Serial and MIDI
+
+The Turbo's Z8530 SCC (`rtl/tc_scc.sv`, the chip `rtl/z8530_scc.sv` from
+Apple-Lisa_MiSTer) has both serial ports: port A is NeXTSTEP's `/dev/ttya`
+and MIDI unit 0, port B is `/dev/ttyb` and MIDI unit 1. The clock select
+register is there, so NeXTSTEP's own baud rates are exact (9600 to 38400,
+and 31250 for MIDI).
+
+* **Serial console.** **Serial port on UART** (Serial & MIDI page) picks the
+  port wired to the MiSTer UART, which Linux sees as `/dev/ttyS1`. To log
+  in over it, turn on getty for `ttya` in NeXTSTEP's `/etc/ttys`:
+  `ttya "/usr/etc/getty std.9600" vt100 on secure`, then `kill -HUP 1`.
+  On the MiSTer: `stty -F /dev/ttyS1 9600 cs7 parenb -parodd raw` and a
+  terminal program on `/dev/ttyS1`. While getty owns `ttya`, port A
+  cannot be used for MIDI.
+* **MIDI to an MT32-pi** on the user port: on the Serial & MIDI page
+  (its MT32-pi entries show once the MT32-pi answers) set **Use MT32-pi**
+  Yes and **MT32-pi on port** B (or A). Main's UART mode can stay None. The MT32-pi's audio comes back over I2S
+  and is mixed with the NeXT's sound. MIDI applications on the NeXT play to
+  the matching MIDI unit (port B = unit 1).
+* MidiLink (FluidSynth or MUNT on the MiSTer's ARM) gives no sound with
+  this core: it plays through Linux audio, which the core leaves out
+  (`MISTER_DISABLE_ALSA`).
+* No SCC DMA; the handshake lines (CTS, DCD) always read asserted.
 
 ## Troubleshooting
 
@@ -206,18 +337,57 @@ be lost.
 | Black screen, no POST, every time the core is loaded from the menu, with `main=` in `MiSTer.ini` | A core before 20261010: update the core. Main restarts once more to switch binaries, and that second core reset made the framework's DDR3 port drop the core's video-memory reads, which left the video memory (and the CPU) waiting forever. Fixed in 20261010 |
 | Black screen, no POST (no "Testing system" screen, no disk access) | The core is running a ROM other than Rev 3.3 v74. `games/NeXT-Color/` should hold `boot0.rom` from `releases/` and no other `boot*.rom`: Main also loads `boot1.rom`, `boot2.rom` and `boot3.rom` at start, and cores before 2026-10 took them as the boot ROM, so a `boot1.rom` copied from the mono NeXT core (Rev 2.5, a 68030 ROM) replaced the Turbo ROM. Remove the extra files and load the core again |
 | `No SCSI disk`, or `SCSI error` | The stock Main is running. Check OSD -> About shows MiSTer v261009 or later (Installing, step 3) |
-| NeXTSTEP panics during boot (for example at the network) | More memory selected than the MiSTer's SDRAM module has: set Memory to 32 MB |
-| Stops at `NeXT>` | Boot device is "Prompt", or no disk image is mounted in "SCSI disk 0": mount one and type `bsd`, or set Boot device to "SCSI disk" and Reset |
+| NeXTSTEP panics during boot (for example at the network) | With a core before 2026-10: more memory selected than the MiSTer's SDRAM module has; set Memory to 32 MB. Newer cores never give the machine more than the module |
+| No network (the link is up but nothing answers) | Network interface is None, or the Main is too old to read it (Installing, step 3): an older Main leaves the network off |
+| Network drops and stalls with two MiSTers running the core on one LAN | Both NeXTs have the same MAC, the one in `releases/boot0.rom`: run `scripts/set_rom_mac.py` on each MiSTer and reload the core (Network, Two MiSTers on one network) |
+| A setting changed but nothing happened | Settings outside the disks and Input wait for the next reset ("Changes pending"): use Apply and reset |
+| Stops at `NeXT>` | Boot device is "Prompt", or no disk image is mounted in "Pri. disk (ID 0)": mount one and type `bsd`, or set Boot device to "SCSI disk" and Apply and reset |
 | Blurry text | Display not set up: give the core a 1080p section in `MiSTer.ini` (Display) |
 
 ## Known limitations
 
-* No DSP56001 in this release (above).
 * No sound input, no DSP serial port, no printer (its registers only), no
   ADB devices, no second display. The NVRAM is not saved.
-* The FPGA is nearly full (about 95% of its logic), so fitter results vary a
+* The FPGA is nearly full (98% of its logic: 41,321 of 41,910 ALMs in the
+  current build), so fitter results vary a
   lot between builds: a build is released only when it meets timing, and a
   build that misses timing is only tried with NeXTSTEP shut down.
+
+## Credits
+
+* **Dani Funker** ([danifunker](https://github.com/danifunker),
+  [MiSTer-devel/NeXT-Color_MiSTer](https://github.com/MiSTer-devel/NeXT-Color_MiSTer)):
+  the NeXT-Color core, and the MiSTer OSD standard its
+  menu follows.
+* **Melkhior** ([MelkhiorVintageComputing/z8530_scc](https://github.com/MelkhiorVintageComputing/z8530_scc)):
+  the Z8530 SCC model this core's serial ports are built on.
+* **alexthecat123** ([LisaFPGA](https://github.com/alexthecat123/LisaFPGA))
+  and **Alanswx** ([MiSTer-devel/Apple-Lisa_MiSTer](https://github.com/MiSTer-devel/Apple-Lisa_MiSTer)):
+  the Apple Lisa core, whose single-clock version of the SCC
+  (`rtl/z8530_scc.sv`) this core imports.
+* **Adam Polkosnik** ([apolkosnik](https://github.com/apolkosnik):
+  [apolkosnik/AP68040](https://github.com/apolkosnik/AP68040),
+  [apolkosnik/Falcon_MiSTer](https://github.com/apolkosnik/Falcon_MiSTer)):
+  * the AP68040, the pipelined, cached 68040 (`rtl/ap68040`) that runs this
+    core's CPU, with its instruction and copyback data caches, MMU and FPU;
+  * the DSP56001 core from Falcon_MiSTer (`rtl/falcon/dsp` there,
+    `rtl/dsp56k` here), which runs the NeXT's DSP in the FPGA for sound
+    playback and DSP-based applications.
+
+  Many thanks to Adam for both: this core's speed comes from the AP68040,
+  and its in-FPGA DSP from his DSP56001.
+
+## License
+
+This core is free software under the GNU General Public License, version 2
+or (at your option) any later version; the full text is in [LICENSE](LICENSE).
+The AP68040 (`rtl/ap68040`, see its [LICENSE](rtl/ap68040/LICENSE)) is GPL v2
+or later as well.
+
+Some files carry their own notices and keep them: the MiSTer framework in
+`sys/` and a few files in `rtl/` (for example `rtl/sdram.sv`) are GPL v3 or
+later, and the simulator's Dear ImGui (`verilator/sim/imgui`) is MIT. A
+built `.rbf` combines all of these, so it is distributed under the GPL v3.
 
 ## Building
 
@@ -243,7 +413,8 @@ sets these:
 | `MISTER_DISABLE_ALSA` | yes (since the first build, from the MacQuadra800 recipe) | Removes the path that mixes Linux-side (ALSA) audio into the core's audio output; the NeXT's own sound is not affected |
 | `MISTER_DISABLE_YC` | yes (2026-09-27) | Removes the composite / S-Video (Y/C) encoder of the analog output. The NeXT picture has a 61.3 kHz line rate (1120x832 at 68.4 Hz), which no composite or S-Video input can show, so the encoder never had a use here; its logic and multipliers are freed |
 | `MISTER_DISABLE_VGA_OSD` | yes (2026-09-27) | No OSD menu on the analog output; HDMI keeps its OSD. Not a stock switch: `sys/sys_top.v` carries it from MacQuadra800_MiSTer's `sys/` (the analog video passes straight through, and the core's OSD-open input reads 0, which this core does not use). Frees ~514 ALMs |
-| `NEXT_NO_DSP` | yes (2026-09-28) | Leaves the DSP56001 host port (`rtl/tc_dsp.sv`) out; its registers read 0. Remove it (and use a Main from `next-color` with the DSP, 2026-09-27 or later) to run the DSP on the ARM |
+| `NEXT_NO_DSP` | no (on 2026-09-28 .. 2026-10-22) | Leaves the DSP56001 out; its registers read 0 |
+| `NEXT_DSP_ARM` | no | The DSP on the ARM (`rtl/tc_dsp.sv` + a Main from `next-color` with the DSP) instead of `rtl/tc_dsp56k.sv` in the FPGA |
 | `AP040_EXPERIMENTAL_XSTORE`, `AP040_EXPERIMENTAL_LEA` | yes | 68040 core options, as in the validated MacQuadra800 build: stores that cross a data-cache line, and a faster LEA/PEA address path |
 
 And leaves these off:

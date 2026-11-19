@@ -18,8 +18,15 @@
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 //  Clocks (structure from MacQuadra800_MiSTer, MacQuadra800.sv):
-//    clk_sys  33.000 MHz  CPU, devices (the real Turbo bus rate)
-//    clk_ram  99.000 MHz  SDRAM controller, exactly 3 x clk_sys (same PLL)
+//    clk_sys  26.000 MHz  CPU bus, devices (real Turbo bus: 33 MHz; CLK_HZ
+//                         keeps the devices' real-time rates)
+//    clk_ram  78.000 MHz  SDRAM controller, exactly 3 x clk_sys (same PLL)
+//    clk_cpu  52.000 MHz  AP68040 core, 2 x clk_sys (same PLL; its bus runs
+//                         at clk_sys, rtl/next_ap68040.sv).  Sets the PLL:
+//                         with the DSP56001 in the FPGA (99 % full, CPU
+//                         synthesized for area) its paths reach ~53-55 MHz
+//                         (60 MHz: -1.9 ns; 52 MHz: +1.6 ns); the soft-DSP clk66
+//                         branch, CPU built for speed, reaches ~61 MHz.
 //    clk_vid 100.000 MHz  pixel clock, own PLL (rtl/pll_vid.v)
 //
 //  Memory (docs/DECISIONS.md):
@@ -38,8 +45,8 @@ module emu
 ///////// Default values for ports not used yet /////////
 
 assign ADC_BUS  = 'Z;
-assign USER_OUT = '1;
-assign {UART_RTS, UART_TXD, UART_DTR} = 0;
+// serial ports: see "Serial ports, MT32-pi" below
+assign {UART_RTS, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
 assign VGA_SL = 0;
@@ -50,11 +57,10 @@ assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
-// sound out: the machine's sound box (tc_kms), signed 16-bit stereo, clk_sys
+// sound out: the machine's sound box (tc_kms), signed 16-bit stereo, clk_sys,
+// mixed with the MT32-pi's I2S (below) when one is attached and in use
 wire [15:0] audio_l, audio_r;
 assign AUDIO_S = 1;
-assign AUDIO_L = audio_l;
-assign AUDIO_R = audio_r;
 assign AUDIO_MIX = 0;
 
 assign LED_POWER = 0;
@@ -64,48 +70,111 @@ assign BUTTONS = 0;
 
 `include "build_id.v"
 localparam CONF_STR = {
-	"NeXT-Color;;",
+	// UART...,MIDI: Main's UART menu (None/PPP/Console/MIDI/Modem; MIDI runs
+	// midilink -> FluidSynth/MUNT/USB MIDI on /dev/ttyS1).  Main shows it only
+	// for cores that declare their speeds here.
+	"NeXT-Color;UART9600:19200:38400:57600,MIDI;",
 	"-;",
+	// MiSTer OSD standard (danifunker/hp9000-715_MiSTer docs/osd-standard.md).
+	// Settings other than the media, Input and the P1 buttons take effect at
+	// the next reset (cfg below).  Rows keep their status bits, so saved
+	// settings stay valid.
+	//
 	// SC slots: Main remembers the mounted image in config/NeXT-Color.s<n>
 	// and re-mounts it at core start, so the ROM can boot from the disk.
 	// Slot n = SCSI target n; slot 3 is the CD-ROM (Main's NEXT_CDROM_SLOT,
 	// which also carries the target-response windows, rtl/tc_scsi.sv).
-	"SC0,HDAVHDIMG,SCSI disk 0;",
-	"SC1,HDAVHDIMG,SCSI disk 1;",
-	"S3,ISOCUEBINCHD,CD-ROM;",
+	"SC0,HDAVHDIMG,Pri. disk (ID 0);",
+	"SC1,HDAVHDIMG,Disk (ID 1);",
+	"SC3,ISOCUEBINCHD,CD-ROM (ID 3);",
 	// slot 4: the 2.88 MB floppy drive (rtl/next_floppy.sv; 720K, 1.44M and
 	// 2.88M images, the geometry follows the size).  Same slot and
 	// extensions as the mono NeXT core.
-	"S4,IMGIMAFLPVFDFD ,Floppy;",
+	"SC4,IMGIMAFLPVFDFD ,Floppy;",
+	// ioctl index 1, not remembered (boot0.rom is index 0, below)
+	"F1,ROMBIN,Load ROM;",
 	"-;",
-	// The first entry is the default.  32 MB fits every SDRAM module (64 MB
-	// needs a 64 or 128 MB module, 128 MB a 128 MB one); "v,1" below drops
-	// the settings saved with the old order (64 MB, Prompt, Normal first).
-	"O[4:3],Memory,32 MB,64 MB,128 MB,16 MB;",
-	"O[5],Power-on self test,On,Off;",
-	"O[8:6],Boot device,SCSI disk,Prompt (NeXT>),Network,Floppy;",
-	// Ethernet: Main's next_enet daemon reads the mode from status[54:52]
-	// (0 off, 1 eth0 shared + MAC filter, ...); this switch is bit 52 alone,
-	// so Connected = mode 1.  rtl/tc_enet.sv: a twisted-pair link.
-	"O[52],Ethernet,Disconnected,Connected;",
+	// The first entry is the default.  32 MB fits every SDRAM module; a
+	// larger choice is capped at the module's size (mem_rank below).  "v,1"
+	// drops settings saved with the old order (64 MB, Prompt, Normal first).
+	"O[4:3],Memory,32MB,64MB,128MB,16MB;",
+	// Network interface: latched (cfg), passed to Main's next_enet daemon as
+	// NET_MODE (rtl/next_enet_bridge.sv).  None unplugs the cable
+	// (rtl/tc_enet.sv).  No wlan0: Main's bridge has none.  Bits 54:52 are
+	// the old Ethernet switch and Main's mono-core status mode: never reuse.
+	// Older saved settings read 0 = eth0.
+	"O[57:55],Network interface,eth0,None,eth1,macvlan,tap0;",
 	"-;",
-	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"P1,Machine;",
+	"P2,Video;",
+	"P3,Input;",
+	"P4,Serial & MIDI;",
+	"P5,Advanced;",
+	"-;",
+	"h0-,Changes pending;",
+	"R[0],Apply and reset;",
+
+	// buttons (status pulses while held): power key (as F10), NMI (ROM
+	// monitor, as F11)
+	"P1T[10],Power key;",
+	"P1T[11],NMI (monitor);",
+
 	// V-Integer first (the default): 1:1 1120x832 on a 1080p display.
-	"O[125:123],Scale,V-Integer,Normal,Narrower HV-Integer,Wider HV-Integer;",
-	"-;",
-	"F1,ROMBIN,Load boot ROM;",
-	"-;",
-	"T[0],Reset;",
-	"R[0],Reset and close OSD;",
+	"P2O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"P2O[125:123],Scale,V-Integer,Normal,Narrower HV-Integer,Wider HV-Integer;",
+
+	// Input acts at once (not latched)
+	"P3O[9],Swap Alt/Win keys,No,Yes;",
+
+	// tc_scc, at once: which serial port is the MiSTer UART (Main's UART
+	// menu, e.g. MIDI: NeXTSTEP's MIDI unit 0 is port A, unit 1 is port B)
+	"P4O[12],Serial port on UART,A,B;",
+
+	// MT32-pi on the USER port (sys/mt32pi.sv, as ao486), at once: shown only
+	// when one answers (menumask bit 1); MIDI out/in on the port picked here
+	"h1P4-;",
+	"h1P4-,MT32-pi:;",
+	"h1P4O[24],Use MT32-pi,Yes,No;",
+	"h1P4O[25],MT32-pi on port,B,A;",
+	"h1P4O[42:41],Show Info,No,Yes;",
+	"h1P4O[26],Synth,Munt,FluidSynth;",
+	"h1P4O[28:27],Munt ROM,MT-32 v1,MT-32 v2,CM-32L;",
+	"h1P4O[31:29],SoundFont,0,1,2,3,4,5,6,7;",
+	"h1P4R[40],Reset Hanging Notes;",
+
+	"P5O[8:6],Boot device,SCSI disk,Prompt,Network,Floppy;",
+	"P5O[5],Self test,On,Off;",
+
+	"I,",
+	"MT32-pi: SoundFont #0,",
+	"MT32-pi: SoundFont #1,",
+	"MT32-pi: SoundFont #2,",
+	"MT32-pi: SoundFont #3,",
+	"MT32-pi: SoundFont #4,",
+	"MT32-pi: SoundFont #5,",
+	"MT32-pi: SoundFont #6,",
+	"MT32-pi: SoundFont #7,",
+	"MT32-pi: MT-32 v1,",
+	"MT32-pi: MT-32 v2,",
+	"MT32-pi: CM-32L,",
+	"MT32-pi: Unknown mode;",
 	"v,1;",
 	"V,v",`BUILD_DATE
 };
 
+// serial ports and the MT32-pi (driven in "Serial ports, MT32-pi" below)
+wire scc_txd_a, scc_rxd_a, scc_txd_b, scc_rxd_b;
+wire mt32_newmode, mt32_available;
+reg        mt32_info_req;
+reg  [7:0] mt32_info_disp;
+
 wire   [1:0] buttons;
 wire [127:0] status;
+wire         cfg_pending;      // a latched setting waits for Apply and reset
 wire  [10:0] ps2_key;
 wire  [24:0] ps2_mouse;
 wire  [32:0] timestamp;
+wire  [15:0] sdram_sz;         // Main's SDRAM module size (UIO_SET_MEMSZ)
 
 wire        ioctl_download;
 wire [15:0] ioctl_index;
@@ -144,11 +213,14 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(0), .VDNUM(5)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask(16'd0),
+	.status_menumask({13'd0, mt32_newmode, mt32_available, cfg_pending}),
+	.info_req(mt32_info_req),
+	.info(mt32_info_disp),
 
 	.ps2_key(ps2_key),
 	.ps2_mouse(ps2_mouse),
 	.TIMESTAMP(timestamp),
+	.sdram_sz(sdram_sz),
 
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_index),
@@ -177,13 +249,16 @@ assign LED_DISK = {1'b0, sd_busy | sd_ack_v[4]};
 
 ///////////////////////   CLOCKS   ///////////////////////////////
 
-wire clk_sys, clk_ram, pll_locked;
+localparam CLK_SYS_HZ = 26000000;   // rtl/pll/pll_0002.v outclk_0
+
+wire clk_sys, clk_ram, clk_cpu, pll_locked;
 pll pll
 (
 	.refclk(CLK_50M),
 	.rst(0),
 	.outclk_0(clk_sys),
 	.outclk_1(clk_ram),
+	.outclk_2(clk_cpu),
 	.locked(pll_locked)
 );
 
@@ -199,7 +274,7 @@ pll_vid pllv
 ///////////////////////   BOOT ROM   /////////////////////////////
 
 // boot0.rom (or boot.rom) is ioctl index 0, loaded by the Main at core start
-// from games/NeXT-Color/; the OSD "Load boot ROM" entry is index 1, with the
+// from games/NeXT-Color/; the OSD "Load ROM" entry is index 1, with the
 // file-extension number in bits [15:6] (.BIN = $41).  Main also sends
 // boot1/2/3.rom at start as $40/$80/$C0: those are not the boot ROM (a
 // boot1.rom copied from the mono NeXT core is a 68030 ROM and left the
@@ -236,15 +311,44 @@ always @(posedge clk_sys) begin
 	reset        <= config_reset | (kms_reset_cnt != 0);
 end
 
-// Machine configuration, sampled while the machine is in reset so the ROM
-// never sees it change under it (the MacQuadra800 lesson).
+// The settings the machine runs with, latched in configuration reset (Apply
+// and reset, the board button, core start, ROM load) so the ROM never sees
+// one change.  The KMS magic reset keeps them, as it keeps the NVRAM.
+// cfg_pending ("Changes pending", menumask bit 0): a latched field differs.
+reg [125:0] cfg = 126'd0;
+always @(posedge clk_sys) if (config_reset) cfg <= status[125:0];
+assign cfg_pending = {status[8:3], status[57:55], status[125:121]} !=
+                     {cfg[8:3],    cfg[57:55],    cfg[125:121]};
+
+// Network interface: OSD order eth0, None, eth1, macvlan, tap0 -> Main's
+// NB_MODE_ 1, 0, 2, 3, 4 (support/next/next_enet.cpp).
+reg [2:0] net_mode;
+always @(*) case (cfg[57:55])
+	3'd0:    net_mode = 3'd1;   // eth0 (shared, promiscuous + the MAC filter)
+	3'd2:    net_mode = 3'd2;   // eth1
+	3'd3:    net_mode = 3'd3;   // macvlan
+	3'd4:    net_mode = 3'd4;   // tap0
+	default: net_mode = 3'd0;   // None
+endcase
+wire net_connected = (net_mode != 3'd0);
+
+// Memory, capped at the SDRAM module (more makes NeXTSTEP panic).  Ranks:
+// 0 = 16 MB, 1 = 32, 2 = 64, 3 = 128; OSD order 32, 64, 128, 16 MB is
+// rank - 1.  sdram_sz[15] = module known, [1:0] 1/2/3 = 32/64/128 MB
+// (sys/hps_io.sv); an unknown module is not capped.
+wire [1:0] mem_want = status[4:3] + 2'd1;
+wire [1:0] mem_max  = !sdram_sz[15]          ? 2'd3 :
+                      (sdram_sz[1:0] == 2'd0) ? 2'd1 : sdram_sz[1:0];
+wire [1:0] mem_rank = (mem_want > mem_max) ? mem_max : mem_want;
+
+// Machine configuration, sampled while the machine is in reset.
 reg  [1:0] ram_cfg  = 2'd0;
 reg        pot_on   = 1'b1;
 reg [95:0] boot_cmd = 96'd0;
 always @(posedge clk_sys) if (config_reset) begin
-	// OSD order 32, 64, 128, 16 MB -> ram_cfg 3, 0, 1, 2 (0 = 64 MB, 1 = 128 MB,
-	// 2 = 16 MB, 3 = 32 MB, rtl/tc_mccs1850.sv)
-	ram_cfg <= status[4:3] - 2'd1;
+	// rank 1, 2, 3, 0 (32, 64, 128, 16 MB) -> ram_cfg 3, 0, 1, 2 (0 = 64 MB,
+	// 1 = 128 MB, 2 = 16 MB, 3 = 32 MB, rtl/tc_mccs1850.sv)
+	ram_cfg <= mem_rank - 2'd2;
 	pot_on  <= ~status[5];
 	case (status[8:6])                      // OSD order: SCSI disk, Prompt, Network, Floppy
 	3'd0:    boot_cmd <= {"sd", 80'd0};
@@ -253,6 +357,25 @@ always @(posedge clk_sys) if (config_reset) begin
 	default: boot_cmd <= 96'd0;             // empty: the ROM stops at NeXT>
 	endcase
 end
+
+// The P1 Machine buttons: a press is a rising edge of the T bit.
+reg  [11:10] osd_btn_d = 2'b00;
+always @(posedge clk_sys) osd_btn_d <= status[11:10];
+wire osd_power = status[10] & ~osd_btn_d[10];
+wire osd_nmi   = status[11] & ~osd_btn_d[11];
+
+// Input: Swap Alt/Win keys (status[9], at once).  Win = NeXT Command, Alt =
+// Alternate (rtl/tc_kms.sv).  ps2_key [8] = extended, [7:0] = set-2 code.
+function automatic [8:0] alt_win(input [8:0] k);
+	case (k)
+		9'h011: alt_win = 9'h11F;   // left Alt -> left GUI
+		9'h11F: alt_win = 9'h011;
+		9'h111: alt_win = 9'h127;   // right Alt -> right GUI
+		9'h127: alt_win = 9'h111;
+		default: alt_win = k;
+	endcase
+endfunction
+wire [10:0] kbd_key = status[9] ? {ps2_key[10:9], alt_win(ps2_key[8:0])} : ps2_key;
 
 // video-domain reset: two-flop synchronizer of the PLL lock
 reg vrst_meta = 1, vrst = 1;
@@ -275,11 +398,16 @@ wire [26:2] mem_wp_addr;
 wire  [3:0] mem_wp_be;
 wire [31:0] mem_wp_data;
 wire        mem_wq_room;
+wire        mem_wp_vram;
+wire        mem_vwq_room;
 wire        mem_line_valid;
 wire [26:4] mem_line_tag;
 wire [127:0] mem_line_data;
 wire        mem_line_pending;
 wire [26:4] mem_line_pending_tag;
+wire        mem_vline_ok;
+wire [20:4] mem_vline_tag;
+wire [127:0] mem_vline_data;
 
 wire [31:0] tmc_hreg, tmc_vreg;
 wire        video_enable;
@@ -289,9 +417,10 @@ wire   [7:0] pal_d;
 wire        vbl_pulse;
 wire        led;
 
-tc_machine machine
+tc_machine #(.CLK_HZ(CLK_SYS_HZ)) machine
 (
 	.clk(clk_sys),
+	.clk_cpu(clk_cpu),
 	.nreset(~reset),
 	.ce(1'b1),
 	.config_reset(config_reset),
@@ -310,11 +439,16 @@ tc_machine machine
 	.mem_wp_be(mem_wp_be),
 	.mem_wp_data(mem_wp_data),
 	.mem_wq_room(mem_wq_room),
+	.mem_wp_vram(mem_wp_vram),
+	.mem_vwq_room(mem_vwq_room),
 	.mem_line_valid(mem_line_valid),
 	.mem_line_tag(mem_line_tag),
 	.mem_line_data(mem_line_data),
 	.mem_line_pending(mem_line_pending),
 	.mem_line_pending_tag(mem_line_pending_tag),
+	.mem_vline_ok(mem_vline_ok),
+	.mem_vline_tag(mem_vline_tag),
+	.mem_vline_data(mem_vline_data),
 
 	.tmc_hreg(tmc_hreg),
 	.tmc_vreg(tmc_vreg),
@@ -324,8 +458,10 @@ tc_machine machine
 	.pal_d(pal_d),
 	.vbl_pulse(vbl_pulse),
 
-	.ps2_key(ps2_key),
+	.ps2_key(kbd_key),
 	.ps2_mouse(ps2_mouse),
+	.osd_power(osd_power),
+	.osd_nmi(osd_nmi),
 	.timestamp(timestamp),
 	.pot_on(pot_on),
 	.boot_cmd(boot_cmd),
@@ -349,13 +485,19 @@ tc_machine machine
 	.fsd_wr(fsd_wr),
 	.fsd_ack(sd_ack_v[4]),
 	.fsd_buff_din(fsd_buff_din),
-	.enet_connected(status[52]),
+	.enet_connected(net_connected),
+	.enet_mode(net_mode),
 	.enet_m_req(enet_m_req),
 	.enet_m_we(enet_m_we),
 	.enet_m_addr(enet_m_addr),
 	.enet_m_wdata(enet_m_wdata),
 	.enet_m_rdata(enet_m_rdata),
 	.enet_m_ack(enet_m_ack),
+
+	.scc_txd_a(scc_txd_a),
+	.scc_rxd_a(scc_rxd_a),
+	.scc_txd_b(scc_txd_b),
+	.scc_rxd_b(scc_rxd_b),
 
 	.led(led),
 	.reset_req(reset_req),
@@ -421,7 +563,7 @@ tc_enet_ddr enet_ddr
 	.DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE), .DDRAM_WE(DDRAM_WE)
 );
 
-tc_memsys memsys
+tc_memsys #(.RAM_HZ(3 * CLK_SYS_HZ)) memsys
 (
 	.clk_sys(clk_sys),
 	.clk_ram(clk_ram),
@@ -444,14 +586,19 @@ tc_memsys memsys
 	.mem_wp_be(mem_wp_be),
 	.mem_wp_data(mem_wp_data),
 	.mem_wq_room(mem_wq_room),
+	.mem_wp_vram(mem_wp_vram),
+	.mem_vwq_room(mem_vwq_room),
 	.mem_line_valid(mem_line_valid),
 	.mem_line_tag(mem_line_tag),
 	.mem_line_data(mem_line_data),
 	.mem_line_pending(mem_line_pending),
 	.mem_line_pending_tag(mem_line_pending_tag),
+	.mem_vline_ok(mem_vline_ok),
+	.mem_vline_tag(mem_vline_tag),
+	.mem_vline_data(mem_vline_data),
 
 	// boot.rom is ioctl index 0 (the Main loads games/NeXT-Color/boot.rom at
-	// core start), the OSD "Load boot ROM" entry is index 1.  Byte-wide
+	// core start), the OSD "Load ROM" entry is index 1.  Byte-wide
 	// ioctl (WIDE=0): the even byte is held and written with the odd one,
 	// big-endian (file byte 0 = bits 15:8 of the first halfword).
 	.rom_we(ioctl_download && rom_index && ioctl_wr && ioctl_addr[0] && ioctl_addr[26:17] == 0),
@@ -507,10 +654,99 @@ assign VGA_VS = ~vga_vs;
 // 35:26, square pixels (the mono core's lesson: a 4:3 declaration squeezes
 // 1120 columns into 1109).  "Normal" scale fills the output height with the
 // right aspect: 1454x1080 on 1080p, 969x720 on 720p.
-wire [1:0] ar = status[122:121];
+////////////////////////////  Serial ports, MT32-pi  ////////////////////////////
+//
+// tc_scc gives both Z8530 channels.  The MiSTer UART (Main's UART menu:
+// Console, PPP, MIDI via midilink, ...) takes port A or B (status[12]); an
+// MT32-pi on the USER port (sys/mt32pi.sv, wired as ao486) takes port B or A
+// (status[25]) for MIDI out and in -- NeXTSTEP's MIDI unit 1 / unit 0
+// (mididriver_reloc).  A port nobody listens to idles high.
+
+wire uart_b = status[12];
+wire mt32_a = status[25];
+
+wire        mt32_reset    = status[40] | reset;
+wire        mt32_disable  = status[24];
+wire        mt32_use      = mt32_available & ~mt32_disable;
+wire        mt32_mute     = mt32_available &  mt32_disable;
+wire        mt32_midi_rx;
+wire [15:0] mt32_i2s_l, mt32_i2s_r;
+wire  [7:0] mt32_mode, mt32_rom, mt32_sf;
+
+assign UART_TXD  = uart_b ? scc_txd_b : scc_txd_a;
+assign scc_rxd_a = !uart_b ? UART_RXD : (mt32_use && mt32_a)  ? mt32_midi_rx : 1'b1;
+assign scc_rxd_b =  uart_b ? UART_RXD : (mt32_use && !mt32_a) ? mt32_midi_rx : 1'b1;
+
+mt32pi mt32pi
+(
+	.CLK_AUDIO(CLK_AUDIO),
+	.CLK_VIDEO(clk_vid),
+	.CE_PIXEL(1'b1),
+	.VGA_VS(~vga_vs),
+	.VGA_DE(VGA_DE),
+
+	.USER_IN(USER_IN),
+	.USER_OUT(USER_OUT),
+
+	.reset(mt32_reset),
+	.midi_tx((mt32_a ? scc_txd_a : scc_txd_b) | mt32_mute),
+	.midi_rx(mt32_midi_rx),
+
+	.mt32_i2s_r(mt32_i2s_r),
+	.mt32_i2s_l(mt32_i2s_l),
+	.mt32_available(mt32_available),
+
+	.mt32_mode_req(status[26]),
+	.mt32_rom_req(status[28:27]),
+	.mt32_sf_req(status[31:29]),
+
+	.mt32_mode(mt32_mode),
+	.mt32_rom(mt32_rom),
+	.mt32_sf(mt32_sf),
+	.mt32_newmode(mt32_newmode),
+
+	.mt32_lcd_en(),
+	.mt32_lcd_pix(),
+	.mt32_lcd_update()
+);
+
+// OSD info on a mode change (status[42:41] = Yes), as ao486
+always @(posedge clk_sys) begin
+	reg old_mode;
+
+	old_mode <= mt32_newmode;
+	mt32_info_req <= (old_mode ^ mt32_newmode) && (status[42:41] == 2'd1);
+
+	mt32_info_disp <= (mt32_mode == 'hA2) ? (8'd1 + mt32_sf[2:0]) :
+	                  (mt32_mode == 'hA1 && mt32_rom == 0) ?  8'd9 :
+	                  (mt32_mode == 'hA1 && mt32_rom == 1) ?  8'd10 :
+	                  (mt32_mode == 'hA1 && mt32_rom == 2) ?  8'd11 : 8'd12;
+end
+
+// Audio: tc_kms's samples (clk_sys) are taken into CLK_AUDIO once they read
+// the same twice (they change at 44.1 kHz), and the MT32-pi's I2S (already
+// CLK_AUDIO) is added with saturation when it is in use.
+reg [15:0] kms_l1, kms_l2, kms_l, kms_r1, kms_r2, kms_r;
+reg [15:0] mix_l, mix_r;
+always @(posedge CLK_AUDIO) begin
+	reg [16:0] sum_l, sum_r;
+
+	kms_l1 <= audio_l; kms_l2 <= kms_l1; if (kms_l1 == kms_l2) kms_l <= kms_l2;
+	kms_r1 <= audio_r; kms_r2 <= kms_r1; if (kms_r1 == kms_r2) kms_r <= kms_r2;
+
+	sum_l = {kms_l[15], kms_l} + (mt32_use ? {mt32_i2s_l[15], mt32_i2s_l} : 17'd0);
+	sum_r = {kms_r[15], kms_r} + (mt32_use ? {mt32_i2s_r[15], mt32_i2s_r} : 17'd0);
+	mix_l <= (^sum_l[16:15]) ? {sum_l[16], {15{sum_l[15]}}} : sum_l[15:0];
+	mix_r <= (^sum_r[16:15]) ? {sum_r[16], {15{sum_r[15]}}} : sum_r[15:0];
+end
+assign AUDIO_L = mix_l;
+assign AUDIO_R = mix_r;
+
+// Both latched (cfg).
+wire [1:0] ar = cfg[122:121];
 // OSD order V-Integer, Normal, ... -> video_freak's 1, 0, 2, 3
-wire [2:0] scale = (status[125:123] == 3'd0) ? 3'd1 :
-                   (status[125:123] == 3'd1) ? 3'd0 : status[125:123];
+wire [2:0] scale = (cfg[125:123] == 3'd0) ? 3'd1 :
+                   (cfg[125:123] == 3'd1) ? 3'd0 : cfg[125:123];
 video_freak video_freak
 (
 	.CLK_VIDEO(clk_vid),

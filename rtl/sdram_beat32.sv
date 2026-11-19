@@ -10,7 +10,8 @@
 //    this bridge; later reads from that line complete without another SDRAM
 //    command.  This matches the AP68040 cache's four-beat refill pattern and
 //    removes three serialized clk_sys/clk_ram handshakes per cache miss.
-//    Writes still take two accesses; NO_WRITE_BURST=1 in the mode register.
+//    Writes are two WRITE commands on consecutive clocks (sdram.sv
+//    STATE_WR2, columns n and n+1); NO_WRITE_BURST=1 in the mode register.
 //
 //  * THE RELATED CLOCKS USE TIMED HALF-CYCLE HANDOFFS.  clk_sys and clk_ram
 //    are phase-aligned 1:3 outputs of the same PLL.  Capturing the request and
@@ -46,6 +47,9 @@
 //============================================================================
 
 module sdram_beat32
+#(
+	parameter RAM_HZ = 99000000           // clk_ram, for the refresh spacing
+)
 (
 	input             init,          // hold the controller in its power-up sequence
 	input             clk_sys,
@@ -90,15 +94,17 @@ module sdram_beat32
 	output            SDRAM_CLK
 );
 
-// Start each refresh slot at 764 cycles.  A BL8 already in flight can defer
-// the command by up to eight clocks; this guard keeps the worst observed gap
-// within the SDRAM's 7.8 us distributed-refresh interval at 99 MHz.
+// Start each refresh slot every 7.72 us (764 cycles at 99 MHz).  A BL8
+// already in flight can defer the command by up to eight clocks; this guard
+// keeps the worst observed gap within the SDRAM's 7.8 us distributed-refresh
+// interval.
+localparam [9:0] REF_SLOT = (RAM_HZ / 1000) * 772 / 100000;   // 764 @ 99 MHz, 660 @ 85.5 MHz
 reg        refresh = 0;
 reg  [9:0] refcnt  = 0;
 
 always @(posedge clk_ram) begin
 	refcnt <= refcnt + 1'b1;
-	if (refcnt == 10'd763) begin
+	if (refcnt == REF_SLOT - 10'd1) begin
 		refcnt  <= 0;
 		refresh <= ~refresh;
 	end
@@ -192,11 +198,23 @@ reg        busy_r   = 0;
 // are held for the whole beat, so this costs nothing; it turns every
 // clk_sys -> clk_ram data path into a plain register-to-register hop instead
 // of letting the fitter time them through the controller's page-hit compare.
-reg [26:2] a_ram  = 0;
+reg [26:2] a_ram  = 0;            // bank-swizzled (bank_swz)
+// SDRAM bank interleave.  sdram.sv takes the bank from A[24:23] and the row
+// from A[22:10] (1 KB rows), so with the plain mapping every 8 MB is one
+// bank and a copy's source and destination almost always share a bank: each
+// switch between them is PRECHARGE + ACTIVE.  The bank is A[11:10] ^ A[21:20]
+// instead (consecutive 1 KB rows rotate through the banks; regions 1 MB
+// apart land in different banks), and A[24:23] take A[11:10]'s place in the
+// row.  A bijection on A[24:10], so the chip only sees its addresses
+// permuted; nothing but this bridge reads or writes the SDRAM.  Applied as
+// a_ram is loaded, off the controller's page-hit compare path.
+function [26:2] bank_swz;
+	input [26:2] a;
+	bank_swz = {a[26:25], a[11:10] ^ a[21:20], a[22:12], a[24:23], a[9:2]};
+endfunction
 reg [31:0] d_ram  = 0;
 reg  [3:0] be_ram = 0;
 reg        we_ram = 0;
-reg        acc      = 0;             // write half: 0 = high word, 1 = low
 reg        wq_act   = 0;             // clk_ram: the access in flight is a FIFO write
 reg        rd_burst = 0;
 reg  [2:0] rd_word  = 0;
@@ -357,21 +375,19 @@ always @(posedge clk_ram) begin
 	end
 	else if (!busy_r) begin
 		if (wq_pend_n) begin
-			acc      <= 0;
 			rd_word  <= 0;
 			busy_r   <= 1;
 			wq_act   <= 1;
-			a_ram    <= wq_q[60:36];
+			a_ram    <= bank_swz(wq_q[60:36]);
 			d_ram    <= wq_q[35:4];
 			be_ram   <= wq_q[3:0];
 			we_ram   <= 1;
 		end
 		else if (req_handoff != req_seen) begin
 			req_seen <= req_handoff;
-			acc      <= 0;
 			rd_word  <= 0;
 			busy_r   <= 1;
-			a_ram    <= r_addr;
+			a_ram    <= bank_swz(r_addr);
 			d_ram    <= r_wdata;
 			be_ram   <= r_be;
 			we_ram   <= r_we;
@@ -383,8 +399,7 @@ always @(posedge clk_ram) begin
 			rd_word  <= 1;
 			rd_burst <= 1;
 		end
-		else if (!acc) acc <= 1;     // second half of the write
-		else begin
+		else begin                   // both halves are in the chip (sdram.sv STATE_WR2)
 			busy_r  <= 0;
 			if (wq_act) begin
 				wq_act <= 0;
@@ -414,11 +429,13 @@ sdram sdram
 	.SDRAM_CLK (SDRAM_CLK),
 
 	.sel       (1'b1),
-	.addr      ({a_ram, acc}),           // word address; acc picks the half
+	.addr      ({a_ram, 1'b0}),          // word address of the high half
 	.dout      (dout),
-	.din       (acc ? d_ram[15:0] : d_ram[31:16]),
+	.din       (d_ram[31:16]),           // a write's two halves go out on
+	.din2      (d_ram[15:0]),            //   consecutive clocks (STATE_WR2)
+	.bs2       (be_ram[1:0]),
 	.wr        (wr),
-	.bs        (acc ? be_ram[1:0] : be_ram[3:2]),
+	.bs        (be_ram[3:2]),
 	.rd        (rd),
 	.ready     (ready),
 	.refresh   (refresh),

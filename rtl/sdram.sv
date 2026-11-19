@@ -51,6 +51,8 @@ module sdram
 	input      [15:0] din,         // data input from cpu
 	input             wr,          // request write
 	input       [1:0] bs,          // bit1 - write high byte, bit0 - write low byte, Ignored while reading.
+	input      [15:0] din2,        // a write's second halfword (column + 1, the clock after din)
+	input       [1:0] bs2,         // its byte enables
 	input             rd,          // request read
 	output reg        ready,
 	input             refresh,
@@ -131,6 +133,8 @@ localparam STATE_FPRE_RAS  = 23;
 localparam STATE_CPPRE_RAS = 24;
 localparam STATE_FPRE_4    = 25;
 localparam STATE_CPPRE_4   = 26;
+localparam STATE_IDLE_6    = 27;
+localparam STATE_WR2       = 28;
 
 
 // These live at module scope rather than inside the always block below.  As
@@ -149,6 +153,8 @@ reg  [1:0] saved_bank;
 reg [12:0] saved_row;
 reg        saved_chip;
 reg [15:0] saved_data;
+reg [15:0] saved_data2;
+reg  [1:0] saved_bs2;
 reg  [8:0] cpcnt;
 reg        old_cpreq = 0;
 reg  [4:0] state = STATE_STARTUP;
@@ -261,12 +267,16 @@ always @(posedge clk) begin
 				cpbusy <= 0;
 			end
 			
+			// paired refresh: rank 0 the clock before, rank 1 here.  Six idle
+			// clocks follow, so rank 1's next ACTIVE is seven after its
+			// REFRESH (tRFC ~66 ns = 7 clocks at 99 MHz)
 			STATE_RFSH: begin
-				state         <= STATE_IDLE_5;
+				state         <= STATE_IDLE_6;
 				command       <= CMD_AUTO_REFRESH;
 				chip          <= 1;
 			end
 
+			STATE_IDLE_6: state <= STATE_IDLE_5;
 			STATE_IDLE_5: state <= STATE_IDLE_4;
 			STATE_IDLE_4: state <= STATE_IDLE_3;
 			STATE_IDLE_3: state <= STATE_IDLE_2;
@@ -299,6 +309,8 @@ always @(posedge clk) begin
 					chip       <= addr[26];
 					saved_chip <= addr[26];
 					saved_data <= din;
+					saved_data2 <= din2;
+					saved_bs2  <= bs2;
 					saved_wr   <= wr;
 					ready      <= 0;
 					if (req_page_hit) begin
@@ -445,14 +457,13 @@ always @(posedge clk) begin
 
 			STATE_WAIT: state <= STATE_RW;
 			STATE_RW: begin
-				state         <= saved_wr ? STATE_IDLE_1 : STATE_RDWAIT;
+				state         <= saved_wr ? STATE_WR2 : STATE_RDWAIT;
 				SDRAM_BA      <= saved_bank;
 				SDRAM_A       <= cas_addr;
 				if(saved_wr) begin
 					command    <= CMD_WRITE;
 					dq_out     <= saved_data;
 					dq_oe      <= 1;
-					ready      <= 1;
 				end
 				else begin
 					command    <= CMD_READ;
@@ -472,6 +483,18 @@ always @(posedge clk) begin
 				end
 			end
 
+			// a write's second halfword, column + 1 on the next clock (the
+			// bridge writes 32 bits as one request).  IDLE_1 then IDLE follow,
+			// so a PRECHARGE is still two clocks after this WRITE (tWR).
+			STATE_WR2: begin
+				state      <= STATE_IDLE_1;
+				SDRAM_BA   <= saved_bank;
+				SDRAM_A    <= {~saved_bs2, cas_addr[10:1], 1'b1};
+				command    <= CMD_WRITE;
+				dq_out     <= saved_data2;
+				dq_oe      <= 1;
+				ready      <= 1;
+			end
 			STATE_WAITCP: state <= STATE_CP;
 			STATE_CP: begin
 				SDRAM_A       <= {2'b00, !cpcnt, cas_addr[9:0]};
