@@ -127,7 +127,7 @@ set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_VGA_OSD=1"
 # DSP56K_DSPBLK: the DSP56001 AGU address-update adders (rtl/dsp56k/dsp56k_agu.sv,
 # 8 per address unit) are cyclonev_mac blocks (m18x18_sumof2, unregistered),
 # 16 DSP blocks for ~100 ALMs; without it they are fabric adders.
-# DSPBLOCKS_PLAN.md has the measurements.
+# Measurements: commit b6f56c6.
 # OFF (2026-11-18): on hardware the block version breaks modulo addressing
 # (linear works), so the Music Kit monitor's DSP-message queue sends $000000
 # forever after boot and DSPBoot never sees DM_IDLE (dsptest / playscore hang).

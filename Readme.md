@@ -1,67 +1,31 @@
 # NeXT-Color core for MiSTer
 
-**This is a fork** of the official core,
-[MiSTer-devel/NeXT-Color_MiSTer](https://github.com/MiSTer-devel/NeXT-Color_MiSTer).
-It branches from the official repository's first release (20261010) and adds:
-
-* the CPU at 52 MHz (the pipelined AP68040 on a 26 MHz machine bus; the
-  official core runs a 68040 at 33 MHz);
-* the DSP56001 in the FPGA (the Falcon_MiSTer DSP core), for Sound Kit and
-  Music Kit;
-* a Z8530 SCC with both serial ports (the Apple-Lisa_MiSTer chip): a
-  serial login console on the MiSTer UART, and NeXTSTEP MIDI out to an
-  MT32-pi;
-* the standard OSD layout (settings applied at reset), Power key and NMI
-  buttons, Swap Alt/Win keys, a Network interface setting, and memory no
-  larger than the SDRAM module.
-
-Releases in `releases/` are builds of this fork. For the official core, use
-MiSTer-devel's repository and its update script.
-
 ## General description
 
 A NeXTstation Turbo Color core for MiSTer: a 52 MHz 68040, the Turbo chipset,
 12-bit colour at 1120x832, NeXT ROM Rev 3.3 v74. It boots NeXTSTEP 3.3 to the
 colour desktop. Work in progress.
 
-**Release candidate 20261119** (`releases/NeXT-Color_20261119.rbf`, md5
-`ebec2805b6f06861dbb951e6d6423a29`, with `releases/MiSTer`, the Main it
-needs, md5 `b2ff085f9fdfc05fac39313d52218e16`): 20261101 plus faster
-memory and the DSP fix.
-* Memory: the bcopy CPU/memory path, SDRAM bank interleave and paired
-  32-bit writes, and RAM misses started in the same clock. RAM reads are
-  about 13% faster and VRAM reads about 78% faster than the 16 Nov test
-  build.
-* HDMI timing: an `ascal` pipeline fix (`docs/ascal-timing-fix.md`).
-* DSP: the DSP's address adders are back in plain logic (`DSP56K_DSPBLK`
-  off). The DSP-block version broke modulo addressing, so the Music Kit
-  hung at boot and `playscore` made no sound.
+Changes since 20261010:
+* the CPU at 52 MHz (the pipelined AP68040 on a 26 MHz machine bus) with
+  instruction and copyback data caches;
+* the DSP56001 in the FPGA (the Falcon_MiSTer DSP core), for Sound Kit and
+  Music Kit;
+* a Z8530 SCC with both serial ports (the Apple-Lisa_MiSTer chip): a
+  serial login console on the MiSTer UART, and NeXTSTEP MIDI out to an
+  MT32-pi;
+* faster memory: the bcopy CPU/memory path, SDRAM bank interleave and
+  paired 32-bit writes, and RAM misses started in the same clock;
+* an `ascal` pipeline fix for HDMI timing (`docs/ascal-timing-fix.md`);
+* the standard OSD layout (settings applied at reset), Power key and NMI
+  buttons, Swap Alt/Win keys, a Network interface setting, and memory no
+  larger than the SDRAM module.
 
-Timing is met on every clock, including HDMI, but the HDMI margin is thin
-at +0.019 ns. Hold slack is +0.117 ns, and the core uses 41,321 ALMs.
-
-On hardware it boots NeXTSTEP 3.3. The DSP boots both NS 3.3 monitors,
+The current build meets timing on every clock, including HDMI, but the
+HDMI margin is thin (+0.019 ns setup, +0.117 ns hold, 41,321 ALMs). On
+hardware it boots NeXTSTEP 3.3. The DSP boots both NS 3.3 monitors,
 `playscore` plays Music Kit scores live, and DSP memory reads and writes
 pass `dsptest`.
-
-This build was compiled with one extra memory setting that is not in
-`main`: `NA_PG_HI` = `8'h04`, a write-allocate test, measured as a small
-net loss.
-
-The previous release, **20261101** (`releases/NeXT-Color_20261101.rbf`,
-md5 `4a94cd036754dc40ca418429d3befd8d`): 20261025 plus the Z8530 SCC
-(serial console and MIDI to an MT32-pi, see "Serial and MIDI"). Timing is
-met on every core clock; only the framework's HDMI PLL misses setup by
-0.070 ns, with no effect seen on hardware. On hardware it boots NeXTSTEP
-3.3, logs in over serial port A at 9600 baud and plays NeXTSTEP MIDI on an
-MT32-pi on port B.
-
-An earlier release, **20261025** (`releases/NeXT-Color_20261025.rbf`,
-md5 `379f9b27e6c83c7e5beb16bd58e99fae`), met timing on every clock at all
-four corners. On hardware it boots NeXTSTEP 3.3 (3 of 3), BenchPress
-scores Dhrystone 243, Integer 287, Floating Point 142, the DSP plays mu-law
-and ATC sounds and Music Kit scores, and with this Main the network comes
-up on eth0.
 
 | Part | State |
 |---|---|
@@ -81,11 +45,11 @@ up on eth0.
   `RESUME-*.md`. ROM analysis (the RTL spec):
   `rom-dissassembly/hardware-summary.md`. Hardware references: `RESOURCES.md`.
   Release builds: `releases/` (`NeXT-Color_<date>.rbf`, the newest is the
-  one to use; `MiSTer`, the Main for it; `boot0.rom`).
+  one to use; `boot0.rom`).
 
 ## Installing
 
-1. **Core**: `releases/NeXT-Color_20261119.rbf` in `_Computer/` (or
+1. **Core**: the newest `releases/NeXT-Color_<date>.rbf` in `_Computer/` (or
    `_Unstable/`); keep the date in the name, as MiSTer's other cores do.
    Load it directly, not through an `.mgl` file (an MGL load once corrupted the
    remembered disk mount, `config/NeXT-Color.s0`).
@@ -96,20 +60,17 @@ up on eth0.
    another one for that session. Do not copy the mono NeXT core's files into this folder: its
    `boot1.rom` is a 68030 ROM (Rev 2.5), which this core cannot run (see
    Troubleshooting).
-3. **Main**: `releases/MiSTer` is the Main for this release: Main_MiSTer
-   with the NeXT network fix (the core chooses the interface, `NXTETH02`,
-   `support/next/next_enet.cpp`; offered to MiSTer-devel/Main_MiSTer), with
-   the Ethernet receive queue (branch `next-enet-rxqueue`, 71538b4), md5
-   `b2ff085f9fdfc05fac39313d52218e16`.
-   The rest of the NeXT-Color support is merged in the official Main
-   (MiSTer-devel/Main_MiSTer #1329); once an official Main release includes
-   the network fix too, the stock Main works and this step goes away. Main
-   serves the SCSI
+3. **Main**: the NeXT-Color support is merged in the official Main
+   (MiSTer-devel/Main_MiSTer #1329). The network additionally needs the
+   NeXT network fix (the core chooses the interface, `NXTETH02`,
+   `support/next/next_enet.cpp`) and the Ethernet receive queue, offered to
+   MiSTer-devel/Main_MiSTer; until an official Main release includes them,
+   build Main_MiSTer with them. Main serves the SCSI
    target responses, the CD-ROM images, the Ethernet bridge and the battery
    clock. A stock Main boots to `NeXT>` but finds no disk ("No SCSI disk").
-   Replace `/media/fat/MiSTer` with it (keep the old one, for example as
-   `MiSTer.stock`), then `sync` and reboot. It runs the other cores as the
-   stock Main does.
+   To use a Main you built, replace `/media/fat/MiSTer` with it (keep the
+   old one, for example as `MiSTer.stock`), then `sync` and reboot. It runs
+   the other cores as the stock Main does.
 
    The network needs a Main that reads the network interface from the core
    (`NXTETH02`, Main_MiSTer `support/next/next_enet.cpp`, 2026-10 or later).
@@ -119,7 +80,7 @@ up on eth0.
    MiSTer version must be **v261009** or later. Anything older means the stock Main is
    running.
 
-   Or, to leave the stock Main in place, copy it as
+   Or, to leave the stock Main in place, copy the built one as
    `/media/fat/MiSTer_NeXT-Color` and add a `main=MiSTer_NeXT-Color` line to
    the core's `[NeXT-Color]` section in `MiSTer.ini` (the Main as a second
    file, used for this core only). That works with
@@ -387,8 +348,8 @@ and 31250 for MIDI).
 
 * No sound input, no DSP serial port, no printer (its registers only), no
   ADB devices, no second display. The NVRAM is not saved.
-* The FPGA is nearly full (98% of its logic: 41,233 of 41,910 ALMs in the
-  current build, bcopy52wa seed 7), so fitter results vary a
+* The FPGA is nearly full (98% of its logic: 41,321 of 41,910 ALMs in the
+  current build), so fitter results vary a
   lot between builds: a build is released only when it meets timing, and a
   build that misses timing is only tried with NeXTSTEP shut down.
 
@@ -396,7 +357,7 @@ and 31250 for MIDI).
 
 * **Dani Funker** ([danifunker](https://github.com/danifunker),
   [MiSTer-devel/NeXT-Color_MiSTer](https://github.com/MiSTer-devel/NeXT-Color_MiSTer)):
-  the NeXT-Color core this fork is built on, and the MiSTer OSD standard its
+  the NeXT-Color core, and the MiSTer OSD standard its
   menu follows.
 * **Melkhior** ([MelkhiorVintageComputing/z8530_scc](https://github.com/MelkhiorVintageComputing/z8530_scc)):
   the Z8530 SCC model this core's serial ports are built on.

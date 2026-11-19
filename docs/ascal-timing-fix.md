@@ -192,7 +192,7 @@ clocks clk_cpu / clk_sys / clk_ram = 52 / 26 / 78 MHz, Quartus 17.0 Lite.
 All clocks pass setup and hold on both seeds. The same seeds failed without
 the patch, so the gain comes from the change, not from a lucky placement.
 
-Hardware: the seed 4 build (cc1edbf6) boots on mister2.
+Hardware: the seed 4 build (cc1edbf6) boots on a MiSTer.
 
 After the patch the old `o_h_poly_*` and `o_hcpt` paths drop out of the HDMI
 top list. The new worst HDMI paths are:
